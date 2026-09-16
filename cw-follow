@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+# cw-follow SESSION DIRFILE
+# 轮询工作台左 pane（claude agents）的屏幕：
+#   列表态（Agent View）或加载中 → 不动，保持上一个目录
+#   attach 态                    → 取 statusline 行（同一行既含 vX.Y.Z 又含存在的目录）里的 cwd
+# 目录变化 → 写 DIRFILE 并通知右 pane：
+#   右 pane 已 source cw.zsh（@cw_ready=1）→ 发 SIGUSR1，trap 里 cd，不打断正在输入的命令
+#   否则回退 send-keys "cd ..."（仅当右 pane 停在空闲 shell，避免打进 vim / tail -f）
+# pane 每轮按 @cw_role 动态发现，故 pane 被关掉重建也无需重启 watcher。
+set -u
+SESS=${1:?用法: cw-follow SESSION DIRFILE}
+DIRFILE=${2:?用法: cw-follow SESSION DIRFILE}
+
+# 单例：拿不到锁说明已有 watcher 在看同一个工作台，直接退出（cw 可无脑重复启动）
+exec 8>"${DIRFILE}.wlock"
+flock -n 8 || exit 0
+
+trap 'rm -f "$DIRFILE" "$DIRFILE.wlock"; exit 0' TERM INT HUP
+
+last=''
+read -r -d '' CLASSIFY <<'PY' || true
+import sys, os, re
+screen = sys.stdin.read()
+if re.search(r'enter to return · space to reply|describe a task for a new session'
+             r'|▝▝ ▝▝\s+\d+ (awaiting input|working|completed)', screen):
+    sys.exit(0)                                    # 列表态
+# attach 态 statusline：版本号与目录同在一行。
+# Agent View banner 的 "Claude Code vX.Y.Z" 与 "· ~/dir" 分处两行，故不会误命中。
+for line in reversed([l for l in screen.splitlines() if l.strip()][-6:]):
+    if not re.search(r'\bv\d+\.\d+\.\d+\b', line):
+        continue
+    for tok in line.split():                       # str.split() 也吃 statusline 里的 NBSP
+        if tok.startswith(('/', '~')):
+            p = os.path.expanduser(tok)
+            if os.path.isdir(p):
+                print(p); sys.exit(0)
+PY
+pane() { tmux list-panes -t "=$SESS" -F '#{@cw_role} #{pane_id}' 2>/dev/null | awk -v r="$1" '$1==r{print $2; exit}'; }
+
+while tmux has-session -t "=$SESS" 2>/dev/null; do
+  L=$(pane left); R=$(pane right)
+  if [ -n "$L" ] && [ -n "$R" ]; then
+    screen=$(tmux capture-pane -p -t "$L" 2>/dev/null || true)
+    dir=$(printf '%s' "$screen" | python3 -c "$CLASSIFY")
+    [ -n "${CW_DEBUG:-}" ] && echo "DBG dir=[$dir] last=[$last]" >&2
+    if [ -n "$dir" ] && [ "$dir" != "$last" ]; then
+      printf '%s\n' "$dir" > "$DIRFILE"
+      if [ "$(tmux show-options -pqv -t "$R" @cw_ready 2>/dev/null)" = 1 ]; then
+        kill -USR1 "$(tmux display -p -t "$R" '#{pane_pid}')" 2>/dev/null && last=$dir
+      else
+        case $(tmux display -p -t "$R" '#{pane_current_command}' 2>/dev/null) in
+          sh|bash|zsh|fish|ksh|dash) tmux send-keys -t "$R" C-u "cd -- '$dir'" Enter; last=$dir ;;
+        esac   # 右侧正在跑别的程序 → 本轮不动，下一轮重试
+      fi
+    fi
+  fi
+  sleep 0.7
+done
+rm -f "$DIRFILE" "${DIRFILE}.wlock"

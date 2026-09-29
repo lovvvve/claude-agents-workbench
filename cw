@@ -78,12 +78,14 @@ esac
 
 # ---- 以下为 up：并发执行时用锁串行化，避免两次 cw 同时构建 ----
 exec 9>"$RUN/cw-$SESS.lock"
-flock 9
+# 合法持锁都在亚秒级（attach 前就释放），等不到 = 被泄漏的 fd 占着；锁按 inode 生效，删文件即解
+flock -w 5 9 || { echo "cw: 锁 $RUN/cw-$SESS.lock 被占用（多半是旧 tmux server 继承了 fd）。rm 掉它再重试；fuser -v 可查持有者" >&2; exit 1; }
 
 if ! has; then
+  # 9>&-：没有 server 时 new-session 会 fork 出常驻的 tmux server，不关 fd 它会永久持锁
   tmux new-session -d -s "$SESS" \
     -x "$(tput cols 2>/dev/null || echo 200)" -y "$(tput lines 2>/dev/null || echo 50)" \
-    -c "$PWD" "$LEFT_CMD"
+    -c "$PWD" "$LEFT_CMD" 9>&-
   tmux set-option -p -t "$(tmux list-panes -t "=$SESS" -F '#{pane_id}' | head -1)" @cw_role left
 fi
 

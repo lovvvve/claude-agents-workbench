@@ -52,6 +52,8 @@ bash 不支持，会语法错误。先赋值再 `${var:-x}`。
 
 `cw` 持锁期间 `exec tmux attach`，锁会一直被 attach 进程持有 → 下次运行 `cw` 卡住。必须在 exec 前 `exec 9>&-`，给 watcher 也要 `nohup ... 9>&-`。
 
+更隐蔽的一路：没有 tmux server 时，`tmux new-session -d` 会 fork 出常驻的 server，它同样继承 fd 9 且永不退出 —— 脚本后面的 `exec 9>&-` 管不到它。表现是之后每次 `cw` 都卡在 `flock 9`（`sh -x` 可见），`lsof <锁文件>` 显示 `tmux: server ... 9w`。所以 `new-session` 也要带 `9>&-`。已中招的环境无需杀 server：flock 按 inode 生效，`rm` 掉锁文件即可解开。
+
 **11. `pkill -f <pattern>` 会匹配到你自己**
 
 在一条命令里既 `echo "...cw-follow..."` 又 `pkill -f cw-follow`，pkill 会把当前 shell 自己杀掉（命令行里含该字符串）。表现是 exit 144 加输出被截断。模式用变量拼：`P="cw-fol"; P="${P}low"`，且同一条命令里别出现该字面串。

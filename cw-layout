@@ -13,7 +13,6 @@
 import argparse
 import fcntl
 import os
-import shlex
 import subprocess
 import sys
 import time
@@ -64,7 +63,7 @@ def pane_fg_cmd(pane_pid: int) -> str:
             return ''
         with open('/proc/%d/cmdline' % tpgid, 'rb') as fh:
             argv = [a.decode('utf-8', 'replace') for a in fh.read().split(b'\0') if a]
-        return shlex.join(argv)
+        return cwlayout.argv_to_cmd(argv) if argv else ''
     except (OSError, ValueError, IndexError):
         return ''
 

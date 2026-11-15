@@ -8,6 +8,7 @@ tmux 自己套用尺寸不同的布局串时不按比例，而是从右下裁剪
 import json
 import os
 import re
+import shlex
 from dataclasses import dataclass, field
 
 
@@ -157,6 +158,22 @@ def same_shape(a: Node, b: Node) -> bool:
         return _role_key(a.role) == _role_key(b.role)
     return len(a.children) == len(b.children) and all(
         same_shape(x, y) for x, y in zip(a.children, b.children))
+
+
+# ---------------------------------------------------------------- 命令文本
+
+_CTRL = re.compile(r'[\x00-\x1f\x7f]+')
+
+
+def argv_to_cmd(argv: list) -> str:
+    """把 /proc/<pid>/cmdline 的 argv 还原成可填进命令行的文本。
+
+    只有一个参数时原样使用：npm 之类会改写 process.title，整条命令挤在 argv[0] 里，
+    再 shlex 加引号就成了一个词（回车报 command not found）。
+    控制字符一律换成空格：命令只填不执行，文本里的换行会被 shell 当成回车执行掉。
+    """
+    text = argv[0] if len(argv) == 1 else shlex.join(argv)
+    return _CTRL.sub(' ', text).strip()
 
 
 # ---------------------------------------------------------------- 切换布局时的 pane 分配

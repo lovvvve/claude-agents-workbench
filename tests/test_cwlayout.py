@@ -14,6 +14,7 @@ from cwlayout import (  # noqa: E402
     Candidate,
     DeviceRecord,
     Node,
+    argv_to_cmd,
     assign_panes,
     builtin_default,
     layout_checksum,
@@ -78,6 +79,21 @@ def T(*cmds):
     """目标布局：left、right 加若干 extra。"""
     return Node('lr', children=[Node('pane', 30, role='left'), Node('pane', 30, role='right')] +
                 [Node('pane', 10, role='extra', cmd=c) for c in cmds])
+
+
+class ArgvTest(unittest.TestCase):
+    def test_retitled_process_single_arg_kept_verbatim(self):
+        # npm 改写了 process.title：cmdline 只剩一个参数（整条命令在一起）
+        self.assertEqual(argv_to_cmd(['npm exec @deepseek-ai/dsh@next web']),
+                         'npm exec @deepseek-ai/dsh@next web')
+
+    def test_normal_argv_shell_quoted(self):
+        self.assertEqual(argv_to_cmd(['sleep', '4242']), 'sleep 4242')
+        self.assertEqual(argv_to_cmd(['echo', 'a b']), "echo 'a b'")
+
+    def test_control_chars_removed(self):
+        self.assertEqual(argv_to_cmd(['ls\n-la']), 'ls -la')
+        self.assertNotIn('\n', argv_to_cmd(['bash', '-c', 'a\nb']))
 
 
 class AssignTest(unittest.TestCase):

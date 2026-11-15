@@ -225,6 +225,26 @@ class ApplyTest(CliCase):
         self.assertNotIn(script, self.main_window_panes())                  # 挪进了「保留」，没被拿来复用
         self.assertNotIn('sleep 4242', self.capture(script))                # 没往运行中的脚本里打字
 
+    def test_park_many_panes_on_short_terminal(self):
+        # 24 行终端：往「保留」窗口挪 6 个忙碌 pane，不能因为一直对半拆同一个 pane 而失败
+        self.e.resize_client(200, 24)
+        self.e.wait(self.window_width_is(200))
+        self.e.wait(lambda: self.tm('display', '-p', '-t', self.p0, '#{window_height}') == '23')
+        busy = []
+        for i in range(6):
+            self.tm('select-layout', '-t', self.p0, 'tiled')
+            p = self.tm('split-window', '-d', '-t', self.p1, '-P', '-F', '#{pane_id}')
+            self.wait_cmd(p, 'bash')
+            self.tm('send-keys', '-t', p, 'sleep 77%d' % i, 'Enter')
+            self.wait_cmd(p, 'sleep')
+            busy.append(p)
+        self.apply('reshape', '默认')
+        parked = [w for w in self.tm('list-windows', '-t', '=cw', '-F', '#{window_id} #{@cw_parked}').split('\n')
+                  if w.endswith(' 1')][0].split()[0]
+        self.assertEqual(sorted(self.tm('list-panes', '-t', parked, '-F', '#{pane_id}').split('\n')), sorted(busy))
+        for i in range(6):
+            self.assertTrue(self.pids_of('^sleep 77%d$' % i))
+
     def test_caller_pane_reused_not_parked(self):
         caller = self.tm('split-window', '-d', '-t', self.p1, '-P', '-F', '#{pane_id}')
         self.wait_cmd(caller, 'bash')

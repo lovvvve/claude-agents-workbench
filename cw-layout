@@ -249,7 +249,14 @@ def _reshape(sess: str, win: str, target: cwlayout.Node, client: str) -> bool:
             in_parked.add(p)
     asg = cwlayout.assign_panes(target, left, right, cands)
 
-    # 用不上的挪进「保留」窗口（不杀）
+    def largest(where=win):
+        best = max(tmux('list-panes', '-t', where, '-F', '#{pane_id} #{pane_width} #{pane_height}').split('\n'),
+                   key=lambda l: int(l.split()[1]) * int(l.split()[2]))
+        pid_, w, h = best.split()
+        return pid_, int(w), int(h)
+
+    # 用不上的挪进「保留」窗口（不杀）。每次先均分再挂到最大的 pane 上：
+    # join-pane -d 默认总拆同一个 pane，对半几次就拆不动了
     for p in asg.park:
         if p in in_parked:
             continue
@@ -258,13 +265,10 @@ def _reshape(sess: str, win: str, target: cwlayout.Node, client: str) -> bool:
             tmux('set-option', '-w', '-t', parked, '@cw_parked', '1')
             tmux('set-option', '-w', '-t', parked, 'automatic-rename', 'off')
         else:
-            tmux('join-pane', '-d', '-s', p, '-t', parked)
-
-    def largest():
-        best = max(tmux('list-panes', '-t', win, '-F', '#{pane_id} #{pane_width} #{pane_height}').split('\n'),
-                   key=lambda l: int(l.split()[1]) * int(l.split()[2]))
-        pid_, w, h = best.split()
-        return pid_, int(w), int(h)
+            tmux('select-layout', '-t', parked, 'tiled')
+            tmux('join-pane', '-d', '-s', p, '-t', largest(parked)[0])
+    if parked and asg.park:
+        tmux('select-layout', '-t', parked, 'tiled')
 
     def split_new(home: str) -> str:
         """先均分再拆面积最大的 pane；按宽高比选方向（字符约 1:2），失败换另一个方向。"""

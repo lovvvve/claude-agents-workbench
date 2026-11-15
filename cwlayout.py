@@ -159,6 +159,57 @@ def same_shape(a: Node, b: Node) -> bool:
         same_shape(x, y) for x, y in zip(a.children, b.children))
 
 
+# ---------------------------------------------------------------- 切换布局时的 pane 分配
+
+@dataclass
+class Candidate:
+    pane_id: str
+    fg_cmd: str        # 前台命令；停在提示符时为 ''
+    idle: bool         # 停在 shell 提示符
+
+
+@dataclass
+class Assignment:
+    slots: list        # 与 leaves(target) 对应：(pane_id 或 None=新开, 是否要填命令)
+    park: list         # 用不上、挪进「保留」窗口的 pane_id
+
+
+def assign_panes(target: Node, left_id: str, right_id: str, candidates: list) -> Assignment:
+    """决定目标布局每个格子用哪个现有 pane（设计 §7.4）。原则：宁可新开，也不挪错。
+
+    1. left/right 固定给 ①④；
+    2. 有命令的格子优先拿正在跑同一命令的 pane（进程不中断、不重复起）；
+    3. 其余格子按顺序拿停在提示符的空 shell，命令格需要填命令；
+    4. 还缺的新开；5. 没用上的候选全部挪进「保留」。
+    """
+    ls = leaves(target)
+    slots = [None] * len(ls)
+    free = list(candidates)
+
+    def take(pred):
+        for c in free:
+            if pred(c):
+                free.remove(c)
+                return c
+        return None
+
+    for i, leaf in enumerate(ls):
+        if leaf.role == 'left':
+            slots[i] = (left_id, False)
+        elif leaf.role == 'right':
+            slots[i] = (right_id, False)
+    for i, leaf in enumerate(ls):
+        if slots[i] is None and leaf.cmd:
+            c = take(lambda c: c.fg_cmd == leaf.cmd)
+            if c:
+                slots[i] = (c.pane_id, False)
+    for i, leaf in enumerate(ls):
+        if slots[i] is None:
+            c = take(lambda c: c.idle)
+            slots[i] = (c.pane_id if c else None, bool(leaf.cmd))
+    return Assignment(slots=slots, park=[c.pane_id for c in free])
+
+
 def builtin_default() -> Node:
     """内置「默认」布局：左 Agent View 60%，右跟随 shell 40%。"""
     return Node('lr', children=[Node('pane', 60.0, role='left'),

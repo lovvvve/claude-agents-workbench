@@ -11,8 +11,10 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from cwlayout import (  # noqa: E402
+    Candidate,
     DeviceRecord,
     Node,
+    assign_panes,
     builtin_default,
     layout_checksum,
     leaves,
@@ -68,6 +70,32 @@ class LayoutTreeTest(unittest.TestCase):
         b = parse_tmux_layout(render_tmux_layout(a, 120, 40, list(range(6))))
         self.assertTrue(same_shape(a, b))
         self.assertFalse(same_shape(a, builtin_default()))
+
+
+def T(*cmds):
+    """目标布局：left、right 加若干 extra。"""
+    return Node('lr', children=[Node('pane', 30, role='left'), Node('pane', 30, role='right')] +
+                [Node('pane', 10, role='extra', cmd=c) for c in cmds])
+
+
+class AssignTest(unittest.TestCase):
+    def test_reuse_running_same_cmd(self):
+        a = assign_panes(T('dsh web'), '%0', '%1',
+                         [Candidate('%7', 'vim x', False), Candidate('%8', 'dsh web', False)])
+        self.assertEqual(a.slots, [('%0', False), ('%1', False), ('%8', False)])
+        self.assertEqual(a.park, ['%7'])
+
+    def test_idle_shell_gets_fill(self):
+        a = assign_panes(T('top', ''), '%0', '%1', [Candidate('%5', '', True)])
+        self.assertEqual(a.slots[2:], [('%5', True), (None, False)])
+
+    def test_new_pane_needs_fill(self):
+        self.assertEqual(assign_panes(T('top'), '%0', '%1', []).slots[2], (None, True))
+
+    def test_busy_never_reused_for_other_cmd(self):
+        a = assign_panes(T(''), '%0', '%1', [Candidate('%9', 'vim x', False)])
+        self.assertEqual(a.slots[2], (None, False))
+        self.assertEqual(a.park, ['%9'])
 
 
 class StorageTest(unittest.TestCase):

@@ -9,8 +9,22 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from cwlayout import leaves, load_layout  # noqa: E402
+import cwlayout  # noqa: E402
+from cwlayout import leaves, load_layout, parse_tmux_layout  # noqa: E402
 from tests.tmuxenv import REPO, TmuxEnv  # noqa: E402
+
+# 用户真实的六格布局结构；角色/命令按叶子顺序给出（top→sleep 4242，dsh→带引号和 $ 的 echo）
+USER = ('2fab,316x71,0,0{208x71,0,0[208x52,0,0,0,208x18,0,53{163x18,0,53,2,44x18,164,53,4}],'
+        '107x71,209,0[107x52,209,0,1,107x9,209,53,3,107x8,209,63,5]}')
+SIX_ROLES = [('left', ''), ('extra', 'sleep 4242'), ('extra', ''),
+             ('right', ''), ('extra', ''), ('extra', 'echo "a b" $HOME')]
+
+
+def six_layout():
+    root = parse_tmux_layout(USER)
+    for leaf, (role, cmd) in zip(leaves(root), SIX_ROLES):
+        leaf.role, leaf.cmd, leaf.pane_id = role, cmd, ''
+    return root
 
 
 class CliCase(unittest.TestCase):
@@ -73,6 +87,148 @@ class SaveTest(CliCase):
         self.assertEqual(r.returncode, 1)
         r = self.run_cli(['cw-layout', 'save', '--session', 'nope', '--name', 'ok', '--yes'])
         self.assertEqual(r.returncode, 1)
+
+
+class ApplyTest(CliCase):
+    """内层会话 cw：left 跑假 claude agents，right 是 bash；harness 提供 200x50 的真实客户端。"""
+
+    def setUp(self):
+        super().setUp()
+        e = self.e
+        e.tmux('new-session', '-d', '-s', 'cw', '-x', '200', '-y', '50', 'claude agents')
+        self.p0 = e.tmux('display', '-p', '-t', '=cw:', '#{pane_id}')
+        e.tmux('set-option', '-p', '-t', self.p0, '@cw_role', 'left')
+        self.p1 = e.tmux('split-window', '-h', '-l', '40%', '-t', self.p0, '-P', '-F', '#{pane_id}')
+        e.tmux('set-option', '-p', '-t', self.p1, '@cw_role', 'right')
+        e.client('tmux attach -t =cw', 200, 50)
+        e.wait(lambda: self.client_tty() != '', msg='客户端未接入')
+        cwlayout.save_layout('六格', six_layout())
+
+    # ---- 辅助
+    def client_tty(self):
+        return self.e.tmux('list-clients', '-t', '=cw', '-F', '#{client_tty}').split('\n')[0]
+
+    def apply(self, mode, name, caller=''):
+        self.e.tmux('set-option', '-w', '-t', self.p0, '@cw_apply', '%s\t%s\t%s' % (mode, name, caller))
+        r = self.run_cli(['cw-layout', 'apply', '--session', 'cw', '--client', self.client_tty()])
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def tm(self, *a):
+        return self.e.tmux(*a)
+
+    def main_window_panes(self):
+        return self.tm('list-panes', '-t', self.p0, '-F', '#{pane_id}').split('\n')
+
+    def window_layout(self):
+        return self.tm('display', '-p', '-t', self.p0, '#{window_layout}')
+
+    def pane_of_slot(self, i):
+        return leaves(parse_tmux_layout(self.window_layout()))[i].pane_id
+
+    def capture(self, pane):
+        return self.tm('capture-pane', '-p', '-t', pane)
+
+    def pid_of_role(self, role):
+        for line in self.tm('list-panes', '-s', '-t', '=cw', '-F', '#{@cw_role} #{pane_pid}').split('\n'):
+            r, _, pid = line.rpartition(' ')
+            if r == role:
+                return int(pid)
+
+    def pids_of(self, pattern):
+        r = subprocess.run(['pgrep', '-f', pattern], capture_output=True, text=True)
+        return sorted(int(x) for x in r.stdout.split())
+
+    def wait_cmd(self, pane, cmd):
+        self.e.wait(lambda: self.tm('display', '-p', '-t', pane, '#{pane_current_command}') == cmd,
+                    msg='%s 未进入 %s' % (pane, cmd))
+
+    def left_column_ratio(self):
+        r = parse_tmux_layout(self.window_layout())
+        return r.children[0].w / float(r.children[0].w + r.children[1].w)
+
+    def window_width_is(self, w):
+        return lambda: self.tm('display', '-p', '-t', self.p0, '#{window_width}') == str(w)
+
+    # ---- 用例
+    def test_reshape_builds_and_fills_without_executing(self):
+        self.apply('reshape', '六格')
+        panes = self.tm('list-panes', '-t', self.p0, '-F',
+                        '#{pane_id}\t#{@cw_role}\t#{pane_current_command}\t#{pane_current_path}').split('\n')
+        self.assertEqual(len(panes), 6)
+        extras = [p.split('\t') for p in panes if p.split('\t')[1] not in ('left', 'right')]
+        self.assertEqual(len(extras), 4)
+        for pid, _, cmd, path in extras:
+            self.assertEqual((cmd, path), ('bash', self.e.home), pid)      # 在 ~，命令没跑
+        self.assertIn('echo "a b" $HOME', self.capture(self.pane_of_slot(5)))
+        self.assertIn('sleep 4242', self.capture(self.pane_of_slot(1)))
+        self.assertEqual(self.tm('show-options', '-wqv', '-t', self.p0, '@cw_layout'), '六格')
+        self.assertEqual(self.pane_of_slot(0), self.p0)
+        self.assertEqual(self.pane_of_slot(3), self.p1)
+
+    def test_fill_special_chars_not_executed(self):
+        self.apply('reshape', '六格')
+        out = self.capture(self.pane_of_slot(5))
+        self.assertIn('echo "a b" $HOME', out)
+        self.assertNotIn('a b ' + self.e.home, out)                          # 没有被执行
+        left = self.capture(self.p0)                                         # ① 绝不能被填入任何文本
+        self.assertNotIn('echo', left)
+        self.assertNotIn('sleep 4242', left)
+
+    def test_reshape_keeps_processes_and_left_pane(self):
+        left_pid = self.pid_of_role('left')
+        busy = self.tm('split-window', '-d', '-t', self.p1, '-P', '-F', '#{pane_id}')
+        self.wait_cmd(busy, 'bash')
+        self.tm('send-keys', '-t', busy, 'sleep 777', 'Enter')
+        self.wait_cmd(busy, 'sleep')
+        self.apply('reshape', '默认')
+        self.assertEqual(self.pid_of_role('left'), left_pid)                 # ① 没有重启
+        self.assertEqual(self.main_window_panes(), [self.p0, self.p1])
+        parked = self.tm('list-windows', '-t', '=cw', '-F', '#{window_name} #{@cw_parked}')
+        self.assertIn('保留 1', parked)
+        self.assertTrue(self.pids_of('^sleep 777$'))
+
+    def test_reshape_reuses_parked_matching_cmd(self):
+        self.apply('reshape', '六格')
+        slot1 = self.pane_of_slot(1)
+        self.tm('send-keys', '-t', slot1, 'Enter')                           # 用户按回车，sleep 4242 开始跑
+        self.wait_cmd(slot1, 'sleep')
+        pid = self.pids_of('^sleep 4242$')
+        self.apply('reshape', '默认')
+        self.assertEqual(len(self.main_window_panes()), 2)
+        self.apply('reshape', '六格')
+        self.assertEqual(self.pids_of('^sleep 4242$'), pid)                  # 进程没变
+        self.assertEqual(self.pane_of_slot(1), slot1)
+        self.assertEqual(self.tm('display', '-p', '-t', slot1, '#{pane_current_command}'), 'sleep')
+
+    def test_caller_pane_reused_not_parked(self):
+        caller = self.tm('split-window', '-d', '-t', self.p1, '-P', '-F', '#{pane_id}')
+        self.wait_cmd(caller, 'bash')
+        self.tm('send-keys', '-t', caller, 'sleep 1', 'Enter')               # 模拟正在跑 cw，马上会结束
+        self.wait_cmd(caller, 'sleep')
+        self.apply('reshape', '六格', caller=caller)
+        self.assertIn(caller, self.main_window_panes())
+
+    def test_rescale_same_layout_after_resize(self):
+        self.apply('reshape', '六格')
+        before = sorted(self.main_window_panes())
+        self.e.resize_client(140, 40)
+        self.e.wait(self.window_width_is(140), msg='窗口未跟随客户端缩小')
+        self.apply('rescale', '六格')
+        self.assertEqual(sorted(self.main_window_panes()), before)
+        self.assertAlmostEqual(self.left_column_ratio(), 0.66, delta=0.02)
+
+    def test_rescale_mismatch_does_nothing(self):
+        self.apply('reshape', '六格')
+        self.tm('split-window', '-d', '-t', self.pane_of_slot(2))
+        layout = self.window_layout()
+        self.apply('rescale', '六格')
+        self.assertEqual(self.window_layout(), layout)
+
+    def test_apply_small_window(self):
+        self.e.resize_client(40, 12)
+        self.e.wait(self.window_width_is(40), msg='窗口未跟随客户端缩小')
+        self.apply('reshape', '六格')
+        self.assertEqual(len(self.main_window_panes()), 6)
 
 
 if __name__ == '__main__':

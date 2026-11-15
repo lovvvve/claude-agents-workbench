@@ -11,10 +11,12 @@
 纯逻辑在同目录的 cwlayout.py。
 """
 import argparse
+import fcntl
 import os
 import shlex
 import subprocess
 import sys
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import cwlayout  # noqa: E402
@@ -134,6 +136,206 @@ def cmd_save(a) -> int:
     return 0
 
 
+# ---------------------------------------------------------------- apply
+
+PARKED_NAME = '保留'
+MISMATCH_HINT = '当前 pane 与布局 %s 不一致，未调整；如需还原请在列表中重新选择'
+
+
+def _lock(sess: str, timeout: float = 5.0):
+    """与 cw 同一把锁：$XDG_RUNTIME_DIR/cw-<会话名>.lock。"""
+    run = os.environ.get('XDG_RUNTIME_DIR') or '/tmp'
+    fd = os.open(os.path.join(run, 'cw-%s.lock' % sess), os.O_WRONLY | os.O_CREAT, 0o600)
+    end = time.time() + timeout
+    while True:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return fd
+        except BlockingIOError:
+            if time.time() > end:
+                os.close(fd)
+                raise CwError('等待工作台锁超时（另一个 cw 正在运行？）')
+            time.sleep(0.1)
+
+
+def _notify(client: str, msg: str) -> None:
+    args = ['display-message'] + (['-c', client] if client else []) + [msg.replace('#', '##')]
+    try:
+        tmux(*args)
+    except subprocess.CalledProcessError:
+        print(msg, file=sys.stderr)
+
+
+def _wait(pred, timeout: float) -> bool:
+    end = time.time() + timeout
+    while time.time() < end:
+        try:
+            if pred():
+                return True
+        except subprocess.CalledProcessError:
+            pass
+        time.sleep(0.05)
+    return False
+
+
+def _idle(pane: str) -> bool:
+    return tmux('display', '-p', '-t', pane, '#{pane_current_command}') in SHELLS
+
+
+def _window_size(win: str):
+    w, h = tmux('display', '-p', '-t', win, '#{window_width} #{window_height}').split()
+    return int(w), int(h)
+
+
+def _pane_order(win: str) -> list:
+    return tmux('list-panes', '-t', win, '-F', '#{pane_id}').split('\n')
+
+
+def _order_panes(win: str, desired: list) -> None:
+    """把窗口内 pane 顺序排成 desired：tmux 套自定义布局时按这个顺序填格子（忽略串里的编号）。"""
+    for i, want in enumerate(desired):
+        cur = _pane_order(win)
+        if cur[i] != want:
+            tmux('swap-pane', '-d', '-s', want, '-t', cur[i])
+
+
+def _select_layout(win: str, target: cwlayout.Node, ids: list) -> None:
+    _order_panes(win, ids)
+    w, h = _window_size(win)
+    tmux('select-layout', '-t', win,
+         cwlayout.render_tmux_layout(target, w, h, [int(p.lstrip('%')) for p in ids]))
+
+
+def _parked_window(sess: str) -> str:
+    for line in tmux('list-windows', '-t', '=' + sess, '-F', '#{window_id}\t#{@cw_parked}').split('\n'):
+        wid, _, flag = line.partition('\t')
+        if flag == '1':
+            return wid
+    return ''
+
+
+def _rescale(win: str, target: cwlayout.Node, name: str, client: str) -> bool:
+    cur = cwlayout.parse_tmux_layout(tmux('display', '-p', '-t', win, '#{window_layout}'))
+    info = _panes(win)
+    for leaf in leaves(cur):
+        leaf.role = info.get(leaf.pane_id, ('', 0))[0] or 'extra'
+    if not cwlayout.same_shape(cur, target):
+        _notify(client, MISMATCH_HINT % name)
+        return False
+    _select_layout(win, target, [l.pane_id for l in leaves(cur)])
+    return True
+
+
+def _reshape(sess: str, win: str, target: cwlayout.Node, client: str) -> bool:
+    info = _panes(win)
+    left = next((p for p, (r, _) in info.items() if r == 'left'), '')
+    right = next((p for p, (r, _) in info.items() if r == 'right'), '')
+    if not right:
+        _notify(client, 'cw: 找不到跟随 shell pane（@cw_role=right），未套用布局')
+        return False
+    parked = _parked_window(sess)
+    in_parked = set()
+    cands = []
+    for p in _pane_order(win):
+        if p not in (left, right):
+            cands.append(cwlayout.Candidate(p, pane_fg_cmd(info[p][1]), _idle(p)))
+    if parked:
+        for p, (_, ppid) in _panes(parked).items():
+            cands.append(cwlayout.Candidate(p, pane_fg_cmd(ppid), _idle(p)))
+            in_parked.add(p)
+    asg = cwlayout.assign_panes(target, left, right, cands)
+
+    # 用不上的挪进「保留」窗口（不杀）
+    for p in asg.park:
+        if p in in_parked:
+            continue
+        if not parked:
+            parked = tmux('break-pane', '-d', '-s', p, '-n', PARKED_NAME, '-P', '-F', '#{window_id}')
+            tmux('set-option', '-w', '-t', parked, '@cw_parked', '1')
+            tmux('set-option', '-w', '-t', parked, 'automatic-rename', 'off')
+        else:
+            tmux('join-pane', '-d', '-s', p, '-t', parked)
+
+    def largest():
+        best = max(tmux('list-panes', '-t', win, '-F', '#{pane_id} #{pane_width} #{pane_height}').split('\n'),
+                   key=lambda l: int(l.split()[1]) * int(l.split()[2]))
+        pid_, w, h = best.split()
+        return pid_, int(w), int(h)
+
+    def split_new(home: str) -> str:
+        """先均分再拆面积最大的 pane；按宽高比选方向（字符约 1:2），失败换另一个方向。"""
+        tmux('select-layout', '-t', win, 'tiled')
+        p, w, h = largest()
+        dirs = ['-h', '-v'] if w >= 2 * h else ['-v', '-h']
+        for d in dirs:
+            try:
+                return tmux('split-window', d, '-d', '-t', p, '-c', home, '-P', '-F', '#{pane_id}')
+            except subprocess.CalledProcessError:
+                continue
+        raise CwError('窗口太小，无法再拆分 pane，布局未完整套用')
+
+    # 被选中的、原本在「保留」里的拉回主窗口
+    for p, _ in asg.slots:
+        if p and p in in_parked:
+            tmux('select-layout', '-t', win, 'tiled')
+            tmux('join-pane', '-d', '-s', p, '-t', largest()[0])
+    # 还缺的新开（在 ~）
+    home = os.path.expanduser('~')
+    ids, fresh = [], set()
+    for p, _ in asg.slots:
+        if p is None:
+            try:
+                p = split_new(home)
+            except CwError as e:
+                _notify(client, 'cw: %s' % e)
+                return False
+            fresh.add(p)
+        ids.append(p)
+    _select_layout(win, target, ids)
+
+    # 只填命令、不回车；① 永远不会出现在这里
+    for (p, need), leaf in zip(zip(ids, (n for _, n in asg.slots)), leaves(target)):
+        if not need or p == left:
+            continue
+        _wait(lambda: _idle(p) and tmux('capture-pane', '-p', '-t', p).strip() != '', 5.0)
+        if p not in fresh:
+            tmux('send-keys', '-t', p, 'C-u')       # 复用的空 shell：先清掉行内残留再填
+        tmux('send-keys', '-t', p, '-l', leaf.cmd)
+    return True
+
+
+def cmd_apply(a) -> int:
+    fd = _lock(a.session)
+    try:
+        win = main_window(a.session)
+        req = tmux('show-options', '-wqv', '-t', win, '@cw_apply')
+        tmux('set-option', '-wu', '-t', win, '@cw_apply')
+        if not req:
+            return 0
+        mode, name, caller = (req.split('\t') + ['', '', ''])[:3]
+        try:
+            target = cwlayout.load_layout(name)
+        except (OSError, ValueError) as e:
+            _notify(a.client, 'cw: 布局「%s」读取失败：%s' % (name, e))
+            return 1
+        if a.client:   # 等窗口跟上这个客户端的尺寸（attach 后 resize 未必已生效）
+            _wait(lambda: tmux('display', '-p', '-t', win, '#{window_width}') ==
+                  tmux('display', '-p', '-c', a.client, '#{client_width}'), 3.0)
+        if caller:     # 执行 cw 的 pane 稍后才回到提示符
+            _wait(lambda: _idle(caller), 1.5)
+        ok = _rescale(win, target, name, a.client) if mode == 'rescale' else \
+            _reshape(a.session, win, target, a.client)
+        if ok:
+            tmux('set-option', '-w', '-t', win, '@cw_layout', name)
+        tmux('select-window', '-t', win)
+        left = next((p for p, (r, _) in _panes(win).items() if r == 'left'), '')
+        if left:
+            tmux('select-pane', '-t', left)
+        return 0 if ok or mode == 'rescale' else 1
+    finally:
+        os.close(fd)
+
+
 # ---------------------------------------------------------------- 入口
 
 def main(argv=None) -> int:
@@ -144,9 +346,12 @@ def main(argv=None) -> int:
     s.add_argument('--name')
     s.add_argument('--yes', action='store_true')
     s.add_argument('--caller-pane', default='')
+    s = sub.add_parser('apply')
+    s.add_argument('--session', required=True)
+    s.add_argument('--client', default='')
     a = p.parse_args(argv)
     try:
-        return {'save': cmd_save}[a.cmd](a)
+        return {'save': cmd_save, 'apply': cmd_apply}[a.cmd](a)
     except CwError as e:
         print('cw: %s' % e, file=sys.stderr)
         return 1

@@ -194,6 +194,11 @@ class StorageTest(unittest.TestCase):
             with self.assertRaises(ValueError, msg=text):
                 load_layout('bad%d' % i)
 
+    def test_load_devices_tolerates_bad_bytes(self):
+        with open(os.path.join(self.cfg, 'devices'), 'wb') as f:
+            f.write(b'\xff\xfe garbage\ncw\t\xe5\x85\xb6\xe4\xbb\x96\t80\t24\tA\n')
+        self.assertEqual([r.layout for r in load_devices()], ['A'])
+
     def test_normalize_term(self):
         self.assertEqual(normalize_term('iTerm2 3.7.7'), 'iTerm2')
         self.assertEqual(normalize_term(''), '其他')

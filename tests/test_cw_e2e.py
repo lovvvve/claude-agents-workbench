@@ -160,6 +160,19 @@ class CwE2E(unittest.TestCase):
         self.assertEqual(self.roles_count('left'), 1)
         self.assertEqual(self.roles_count('right'), 1)
 
+    def test_menu_failure_still_enters_workbench(self):
+        # 布局目录没有读权限：列表出错，但不能把人挡在工作台外
+        layouts = os.path.join(self.e.cfg, 'layouts')
+        os.makedirs(layouts)
+        open(os.path.join(layouts, 'x.json'), 'w').close()
+        os.chmod(layouts, 0)
+        try:
+            self.e.client(CW, 200, 50)
+            self.e.wait(lambda: self.session_exists() and self.roles_count('right') == 1, msg='没能进入工作台')
+            self.assertEqual(len(self.main_panes()), 2)
+        finally:
+            os.chmod(layouts, 0o700)
+
     def test_kill_only_own_watcher(self):
         # 同名工作台、不同运行目录的 watcher（比如用户真实的那个）不能被 cw -k 误杀。
         # 用唯一的工作台名，RED 阶段也碰不到用户真实的 `cw-follow cw …`

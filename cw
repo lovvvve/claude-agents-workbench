@@ -94,7 +94,13 @@ if has; then
   L0=$(pane left)
   if [ -n "$L0" ]; then cur=$(tmux show-options -wqv -t "$L0" @cw_layout 2>/dev/null || true); fi
 fi
-choice=$(python3 "$BIN/cw-layout" menu --session "$SESS" ${running:+--running} --current "$cur") || exit $?
+# 你取消（130）就退出；其他错误（配置目录无权限、文件损坏等）只警告，按保持现状进入，别把人挡在外面
+choice=$(python3 "$BIN/cw-layout" menu --session "$SESS" ${running:+--running} --current "$cur") || {
+  rc=$?
+  [ "$rc" -eq 130 ] && exit 130
+  echo "cw: 布局列表出错（见上），本次按保持现状进入" >&2
+  choice=__keep__
+}
 
 # 并发执行时用锁串行化，避免两次 cw 同时构建
 exec 9>"$RUN/cw-$SESS.lock"

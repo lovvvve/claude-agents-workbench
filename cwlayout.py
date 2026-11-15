@@ -347,8 +347,8 @@ def _devices_path() -> str:
 
 
 def load_devices() -> list:
-    try:
-        with open(_devices_path(), encoding='utf-8') as f:
+    try:   # 损坏的字节换成替换符，对应行会因字段不对被跳过
+        with open(_devices_path(), encoding='utf-8', errors='replace') as f:
             lines = f.read().splitlines()
     except FileNotFoundError:
         return []

@@ -436,7 +436,7 @@ def main(argv=None) -> int:
     except CwError as e:
         print('cw: %s' % e, file=sys.stderr)
         return 1
-    except ValueError as e:
+    except (ValueError, OSError) as e:
         print('cw: %s' % e, file=sys.stderr)
         return 1
     except (EOFError, KeyboardInterrupt):

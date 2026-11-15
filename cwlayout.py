@@ -5,6 +5,8 @@
 尺寸一律按「占父节点切分方向的百分比」保存，套用时再按窗口尺寸换算成绝对值：
 tmux 自己套用尺寸不同的布局串时不按比例，而是从右下裁剪（见 docs/pitfalls.md）。
 """
+import json
+import os
 import re
 from dataclasses import dataclass, field
 
@@ -161,3 +163,145 @@ def builtin_default() -> Node:
     """内置「默认」布局：左 Agent View 60%，右跟随 shell 40%。"""
     return Node('lr', children=[Node('pane', 60.0, role='left'),
                                 Node('pane', 40.0, role='right')])
+
+
+# ---------------------------------------------------------------- 布局文件
+
+BUILTIN_NAME = '默认'
+
+
+def config_dir() -> str:
+    return os.environ.get('CW_CONFIG_DIR') or os.path.expanduser('~/.config/cw')
+
+
+def _layouts_dir() -> str:
+    return os.path.join(config_dir(), 'layouts')
+
+
+def validate_name(name: str):
+    """布局名合法返回 None，否则返回中文原因。允许中文和空格。"""
+    if not name or not name.strip():
+        return '名字不能为空'
+    if '/' in name:
+        return '名字不能包含 /'
+    if name.startswith('.'):
+        return '名字不能以 . 开头'
+    if any(ord(c) < 32 for c in name):
+        return '名字不能包含换行、制表符等控制字符'
+    if name == BUILTIN_NAME:
+        return '「%s」是内置布局，请换个名字' % BUILTIN_NAME
+    return None
+
+
+def list_layouts() -> list:
+    """已保存的布局名（不含内置），按名字排序。"""
+    try:
+        files = os.listdir(_layouts_dir())
+    except FileNotFoundError:
+        return []
+    return sorted(f[:-5] for f in files if f.endswith('.json') and not f.startswith('.'))
+
+
+def _to_json(n: Node, root: bool = False) -> dict:
+    if n.kind == 'pane':
+        role = n.role or 'extra'
+        d = {'size': n.size, 'pane': role}
+        if role == 'extra':
+            d['cmd'] = n.cmd
+        return d
+    d = {} if root else {'size': n.size}
+    d.update({'split': n.kind, 'children': [_to_json(c) for c in n.children]})
+    return d
+
+
+def _from_json(d: dict) -> Node:
+    size = float(d.get('size', 100.0))
+    if 'pane' in d:
+        return Node('pane', size, role=d['pane'], cmd=d.get('cmd', '') if d['pane'] == 'extra' else '')
+    if d.get('split') not in ('lr', 'tb') or not d.get('children'):
+        raise ValueError('split 必须是 lr / tb 且有 children')
+    return Node(d['split'], size, children=[_from_json(c) for c in d['children']])
+
+
+def _check_roles(root: Node) -> None:
+    roles = [l.role for l in leaves(root)]
+    if roles.count('left') != 1 or roles.count('right') != 1:
+        raise ValueError('布局必须恰好包含一个 left（Agent View）和一个 right（跟随 shell）')
+
+
+def load_layout(name: str) -> Node:
+    if name == BUILTIN_NAME:
+        return builtin_default()
+    with open(os.path.join(_layouts_dir(), name + '.json'), encoding='utf-8') as f:
+        data = json.load(f)
+    root = _from_json(data['root'])
+    _check_roles(root)
+    return root
+
+
+def _write_atomic(path: str, text: str) -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + '.tmp'
+    with open(tmp, 'w', encoding='utf-8') as f:
+        f.write(text)
+    os.replace(tmp, path)
+
+
+def save_layout(name: str, root: Node) -> None:
+    err = validate_name(name)
+    if err:
+        raise ValueError(err)
+    _check_roles(root)
+    text = json.dumps({'version': 1, 'root': _to_json(root, root=True)}, ensure_ascii=False, indent=2)
+    _write_atomic(os.path.join(_layouts_dir(), name + '.json'), text + '\n')
+
+
+# ---------------------------------------------------------------- 设备记录
+
+@dataclass
+class DeviceRecord:
+    workbench: str
+    term: str
+    width: int
+    height: int
+    layout: str
+
+
+def normalize_term(raw: str) -> str:
+    return 'iTerm2' if 'iterm2' in (raw or '').lower() else '其他'
+
+
+def _devices_path() -> str:
+    return os.path.join(config_dir(), 'devices')
+
+
+def load_devices() -> list:
+    try:
+        with open(_devices_path(), encoding='utf-8') as f:
+            lines = f.read().splitlines()
+    except FileNotFoundError:
+        return []
+    out = []
+    for line in lines:
+        p = line.split('\t')
+        if len(p) == 5 and p[2].isdigit() and p[3].isdigit():
+            out.append(DeviceRecord(p[0], p[1], int(p[2]), int(p[3]), p[4]))
+    return out
+
+
+def remember_device(rec: DeviceRecord) -> None:
+    """同一 (工作台, 终端类型, 宽, 高) 只留一条，后写覆盖。"""
+    key = (rec.workbench, rec.term, rec.width, rec.height)
+    keep = [r for r in load_devices() if (r.workbench, r.term, r.width, r.height) != key]
+    keep.append(rec)
+    _write_atomic(_devices_path(), ''.join(
+        '%s\t%s\t%d\t%d\t%s\n' % (r.workbench, r.term, r.width, r.height, r.layout) for r in keep))
+
+
+def pick_default(records, workbench: str, term: str, width: int, height: int, available) -> str:
+    """同工作台、同终端类型里尺寸最接近的记录；布局已不存在或无记录时回退「默认」。"""
+    cands = [r for r in records if r.workbench == workbench and r.term == term]
+    if not cands:
+        return BUILTIN_NAME
+    best = min(cands, key=lambda r: abs(r.width - width) + abs(r.height - height))
+    return best.layout if best.layout in available else BUILTIN_NAME

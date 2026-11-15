@@ -3,18 +3,30 @@
 运行：python3 -m unittest tests.test_cwlayout -v（在仓库根目录）
 """
 import os
+import shutil
 import sys
+import tempfile
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from cwlayout import (  # noqa: E402
+    DeviceRecord,
+    Node,
     builtin_default,
     layout_checksum,
     leaves,
+    list_layouts,
+    load_devices,
+    load_layout,
+    normalize_term,
     parse_tmux_layout,
+    pick_default,
+    remember_device,
     render_tmux_layout,
     same_shape,
+    save_layout,
+    validate_name,
 )
 
 # 用户在 316x72 外接屏上的真实六格布局（tmux #{window_layout}）
@@ -56,6 +68,66 @@ class LayoutTreeTest(unittest.TestCase):
         b = parse_tmux_layout(render_tmux_layout(a, 120, 40, list(range(6))))
         self.assertTrue(same_shape(a, b))
         self.assertFalse(same_shape(a, builtin_default()))
+
+
+class StorageTest(unittest.TestCase):
+    def setUp(self):
+        self.cfg = tempfile.mkdtemp(prefix='cwcfg-')
+        self._old = os.environ.get('CW_CONFIG_DIR')
+        os.environ['CW_CONFIG_DIR'] = self.cfg
+
+    def tearDown(self):
+        if self._old is None:
+            os.environ.pop('CW_CONFIG_DIR', None)
+        else:
+            os.environ['CW_CONFIG_DIR'] = self._old
+        shutil.rmtree(self.cfg, ignore_errors=True)
+
+    def test_validate_name(self):
+        self.assertIsNone(validate_name('监控 布局'))
+        for bad in ('', 'a/b', '.hidden', '默认'):
+            self.assertIsNotNone(validate_name(bad))
+
+    def test_roundtrip_cmd_special_chars(self):
+        root = builtin_default()
+        root.children[1:1] = [Node('pane', 10, role='extra', cmd='echo "a b" $HOME \'q\'')]
+        save_layout('中文 名', root)
+        self.assertIn('中文 名', list_layouts())
+        got = load_layout('中文 名')
+        self.assertEqual(leaves(got)[1].cmd, 'echo "a b" $HOME \'q\'')
+
+    def test_load_builtin(self):
+        self.assertTrue(same_shape(load_layout('默认'), builtin_default()))
+
+    def test_pick_default_nearest_same_term_and_workbench(self):
+        rs = [DeviceRecord('cw', 'iTerm2', 316, 72, 'A'), DeviceRecord('cw', 'iTerm2', 180, 50, 'B'),
+              DeviceRecord('cw', '其他', 316, 72, 'C'), DeviceRecord('cw-api', 'iTerm2', 316, 72, 'D')]
+        avail = {'A', 'B', 'C', 'D'}
+        self.assertEqual(pick_default(rs, 'cw', 'iTerm2', 310, 70, avail), 'A')
+        self.assertEqual(pick_default(rs, 'cw', 'iTerm2', 190, 52, avail), 'B')
+        self.assertEqual(pick_default(rs, 'cw', '其他', 100, 30, avail), 'C')
+
+    def test_pick_default_deleted_layout_falls_back(self):
+        rs = [DeviceRecord('cw', 'iTerm2', 316, 72, 'gone')]
+        self.assertEqual(pick_default(rs, 'cw', 'iTerm2', 316, 72, set()), '默认')
+
+    def test_remember_device_overwrites_same_key(self):
+        remember_device(DeviceRecord('cw', 'iTerm2', 316, 72, 'A'))
+        remember_device(DeviceRecord('cw', 'iTerm2', 316, 72, 'B'))
+        self.assertEqual([r.layout for r in load_devices()], ['B'])
+
+    def test_validate_name_rejects_control_chars(self):
+        self.assertIsNotNone(validate_name('a\tb'))     # 制表符会破坏 devices 文件
+        self.assertIsNotNone(validate_name('a\nb'))
+
+    def test_save_requires_exactly_one_left_and_right(self):
+        bad = Node('lr', children=[Node('pane', 50, role='left'), Node('pane', 50, role='extra')])
+        with self.assertRaises(ValueError):
+            save_layout('缺右', bad)
+
+    def test_normalize_term(self):
+        self.assertEqual(normalize_term('iTerm2 3.7.7'), 'iTerm2')
+        self.assertEqual(normalize_term(''), '其他')
 
 
 if __name__ == '__main__':

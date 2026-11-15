@@ -8,20 +8,23 @@ BIN=$(cd -- "$(dirname -- "$SELF")" && pwd)
 
 usage() {
   cat <<'EOF'
-用法: cw [-n 名字] [-r] [-s] [-k] [-h]
+用法: cw [-n 名字] [-s] [-i] [-r] [-k] [-h]
   (无参数)   复用或创建工作台 cw，并进入；已存在则自愈缺失的 pane / watcher
+             保存过布局时先弹列表选布局（默认项 = 这台设备上次用的），
+             运行中切布局在原会话里就地重排，用不上的 pane 挪进「保留」窗口
              退出 Agent View 后左 pane 会落回 shell（不会自动拉回），可直接敲
              claude agents 重启，或用 cw -r
   -n 名字    使用独立工作台 cw-<名字>（可并存多个工作台）
+  -s         把当前布局保存成模板（交互式输入名字、确认各 pane 的命令）
+  -i         只打印状态，不进入
   -r         重启左 pane 的 Agent View（claude 升级后用；后台 agent 不受影响）
-  -s         只打印状态，不进入
   -k         关闭该工作台（session + watcher + 临时文件）
 EOF
 }
 NAME='' MODE=up
-while getopts 'n:rskh' o; do
+while getopts 'n:rsikh' o; do
   case $o in
-    n) NAME=$OPTARG ;; r) MODE=restart ;; s) MODE=status ;; k) MODE=kill ;; h) usage; exit 0 ;;
+    n) NAME=$OPTARG ;; r) MODE=restart ;; s) MODE=save ;; i) MODE=status ;; k) MODE=kill ;; h) usage; exit 0 ;;
     *) usage >&2; exit 2 ;;
   esac
 done
@@ -37,7 +40,8 @@ DIRFILE=$RUN/cw-dir.$SESS
 LEFT_CMD="claude agents; exec ${SHELL:-/bin/bash}"
 
 has()  { tmux has-session -t "=$SESS" 2>/dev/null; }               # = 前缀 = 精确匹配，避免 cw 命中 cw-foo
-pane() { tmux list-panes -t "=$SESS" -F '#{@cw_role} #{pane_id}' 2>/dev/null | awk -v r="$1" '$1==r{print $2; exit}'; }
+# -s：按整个会话找。不带 -s 只列当前窗口，用户停在「保留」窗口时会找不到 ①④ 而误重建
+pane() { tmux list-panes -s -t "=$SESS" -F '#{@cw_role} #{pane_id}' 2>/dev/null | awk -v r="$1" '$1==r{print $2; exit}'; }
 wpid() { pgrep -f "cw-follow $SESS " 2>/dev/null | head -1; }
 # 左 pane 跑的是 `<shell> -c "claude agents; exec <shell>"`：非交互 shell 不做 job control，
 # pane_current_command 恒为 shell 名，故用进程树判断 Agent View 是否还活着
@@ -52,14 +56,19 @@ case $MODE in
       w=$(wpid || true)
       L=$(pane left)
       if [ -n "$L" ] && agents_alive "$L"; then lst='Agent View 运行中'; else lst='已退出（左 pane 是 shell，敲 claude agents 或 cw -r 重启）'; fi
-      printf '%s: 运行中  left=%s  right=%s  watcher=%s\n  左 pane: %s\n  当前目录=%s\n' \
-        "$SESS" "${L:-无}" "$(pane right)" "${w:-无}" "$lst" "$(cat "$DIRFILE" 2>/dev/null || echo 无)"
+      lay=''; [ -n "$L" ] && lay=$(tmux show-options -wqv -t "$L" @cw_layout 2>/dev/null || true)
+      printf '%s: 运行中  left=%s  right=%s  watcher=%s\n  左 pane: %s\n  当前目录=%s\n  布局=%s\n' \
+        "$SESS" "${L:-无}" "$(pane right)" "${w:-无}" "$lst" "$(cat "$DIRFILE" 2>/dev/null || echo 无)" "${lay:-无}"
     else
       echo "$SESS: 未运行"
     fi
     other=$(tmux ls -F '#{session_name}' 2>/dev/null | grep -E '^cw[0-9]+$' | tr '\n' ' ' || true)
     if [ -n "$other" ]; then echo "  提示: 存在旧式 session（pid 命名，旧版 cw 遗留）: $other"; fi
     exit 0 ;;
+  save)
+    has || { echo "$SESS 未运行，先执行 cw 启动" >&2; exit 1; }
+    # 在工作台的 pane 里执行时，这个 pane 前台是 cw 自己，交给 save 记成空 shell
+    exec python3 "$BIN/cw-layout" save --session "$SESS" ${TMUX_PANE:+--caller-pane "$TMUX_PANE"} ;;
   restart)
     if has; then
       L=$(pane left)
@@ -76,7 +85,17 @@ case $MODE in
     exit 0 ;;
 esac
 
-# ---- 以下为 up：并发执行时用锁串行化，避免两次 cw 同时构建 ----
+# ---- 以下为 up ----
+# 先选布局（不持锁：等你选择时不能挡住别的 cw）。没保存过布局时 menu 直接给 __keep__，行为同旧版
+running='' cur=''
+if has; then
+  running=1
+  L0=$(pane left)
+  if [ -n "$L0" ]; then cur=$(tmux show-options -wqv -t "$L0" @cw_layout 2>/dev/null || true); fi
+fi
+choice=$(python3 "$BIN/cw-layout" menu --session "$SESS" ${running:+--running} --current "$cur") || exit $?
+
+# 并发执行时用锁串行化，避免两次 cw 同时构建
 exec 9>"$RUN/cw-$SESS.lock"
 # 合法持锁都在亚秒级（attach 前就释放），等不到 = 被泄漏的 fd 占着；锁按 inode 生效，删文件即解
 flock -w 5 9 || { echo "cw: 锁 $RUN/cw-$SESS.lock 被占用（多半是旧 tmux server 继承了 fd）。rm 掉它再重试；fuser -v 可查持有者" >&2; exit 1; }
@@ -89,16 +108,15 @@ if ! has; then
   tmux set-option -p -t "$(tmux list-panes -t "=$SESS" -F '#{pane_id}' | head -1)" @cw_role left
 fi
 
-# 左 pane：缺标记则认领第一个 pane；整个 pane 没了才重建。
-# 若它已落回 shell（你退出了 Agent View），保持原样 —— 重启请敲 claude agents 或 cw -r
+# 左 pane：整个 pane 没了才重建；若它已落回 shell（你退出了 Agent View），保持原样 ——
+# 重启请敲 claude agents 或 cw -r。不再「认领第一个没角色的 pane」：多 pane 布局下会把 top 之类误认成 ①
 L=$(pane left)
 if [ -z "$L" ]; then
-  first=$(tmux list-panes -t "=$SESS" -F '#{@cw_role} #{pane_id}' | awk '$1!="right"{print $2; exit}')
-  if [ -n "$first" ]; then
-    L=$first
-  else                                    # 只剩右 pane：在它左边插回一个
-    R0=$(pane right)
+  R0=$(pane right)
+  if [ -n "$R0" ]; then                   # 在右 pane 左边插回一个
     L=$(tmux split-window -h -b -l 60% -t "$R0" -c "$PWD" -P -F '#{pane_id}' "$LEFT_CMD")
+  else                                    # 两个角色都没有（旧版遗留会话）：在当前窗口新开
+    L=$(tmux split-window -h -b -l 60% -t "=$SESS:" -c "$PWD" -P -F '#{pane_id}' "$LEFT_CMD")
   fi
   tmux set-option -p -t "$L" @cw_role left
 fi
@@ -114,6 +132,20 @@ fi
 # 9>&- 防止 watcher 继承本脚本的锁，否则 attach 期间锁不释放
 nohup "$BIN/cw-follow" "$SESS" "$DIRFILE" >/dev/null 2>&1 9>&- &
 
+# 选了布局：把请求挂在主窗口上，进入后由 tmux 在新客户端接入之后执行 apply，
+# 这样能按这个客户端的真实尺寸算比例（同一布局只重算比例，否则就地重排）
+APPLY=()
+if [ "$choice" != __keep__ ]; then
+  if [ -n "$running" ] && [ "$choice" = "$cur" ]; then mode=rescale; else mode=reshape; fi
+  tmux set-option -w -t "$L" @cw_apply "$mode"$'\t'"$choice"$'\t'"${TMUX_PANE:-}"
+  APPLY=(\; run-shell -b "python3 '$BIN/cw-layout' apply --session '$SESS' --client '#{client_tty}' >/dev/null 2>&1")
+fi
+
+tmux select-window -t "$L"
 tmux select-pane -t "$L"
 exec 9>&-                                                   # 进入前释放锁，让下一次 cw 不被阻塞
-if [ -n "${TMUX:-}" ]; then exec tmux switch-client -t "=$SESS"; else exec tmux attach -t "=$SESS"; fi
+if [ -n "${TMUX:-}" ]; then
+  exec tmux switch-client -t "=$SESS" "${APPLY[@]}"
+else
+  exec tmux attach -t "=$SESS" "${APPLY[@]}"
+fi

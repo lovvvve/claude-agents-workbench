@@ -4,3 +4,6 @@
 
 # Claude Code 的 worktree 元数据
 .claude/worktrees/
+
+# python 字节码
+__pycache__/

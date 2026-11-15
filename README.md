@@ -41,10 +41,11 @@ cd ~/claude-agents-workbench
 ## 用法
 
 ```bash
-cw            # 进入工作台；已存在则复用并自愈，不会新建第二个
+cw            # 进入工作台；已存在则复用并自愈，不会新建第二个；保存过布局时先弹列表
+cw -s         # 把当前布局保存成模板
+cw -i         # 查看状态，不进入
 cw -n api     # 独立的第二个工作台（cw-api），互不干扰
 cw -r         # 重启左 pane 的 Agent View（claude 升级后用）
-cw -s         # 查看状态，不进入
 cw -k         # 关闭工作台
 cw -h         # 帮助
 ```
@@ -53,11 +54,42 @@ cw -h         # 帮助
 
 **幂等**：重复执行 `cw` 只会回到同一个工作台，并补齐缺失的部分——右 pane 被关掉会补回，watcher 挂了会重启（且只会有一个），并发执行由 `flock` 串行化。
 
+## 布局
+
+不同的业务、不同的屏幕，常常要把工作台拆成不同的样子：多开几个 pane，各跑 `top`、`k9s`、日志之类。调好一次就存下来，以后启动时直接选。
+
+**保存**：在工作台里调好布局后执行 `cw -s`，输入名字（可以用中文）。cw 会列出每个附加 pane 当前在跑的命令，你可以逐个保留、修改或清空。布局存在 `~/.config/cw/layouts/<名字>.json`，是可以手改的 JSON；删除布局就删除这个文件。
+
+**选择**：保存过布局之后，`cw` 启动时先弹出列表：
+
+```
+cw 布局（cw · iTerm2 316x72）：
+  1) 保持现状，直接进入        ← 工作台已在运行时才有
+  2) 默认
+* 3) 监控  ← 当前
+  4) 开发
+选择 [3]：
+```
+
+- 默认项（`*`）是**这台设备上次选的布局**。设备按终端类型（iTerm2 / 其他）加窗口尺寸识别，取尺寸最接近的那条记录。所以笔记本屏幕、外接显示器、Windows Terminal 会各自记住自己的布局，回车即可。
+- 工作台没在运行：按选中的布局新建。
+- 工作台已在运行、选了另一个布局：在**原会话里就地重排**。① Agent View 和 ④ 跟随 shell 原样挪过去；正在跑同一命令的 pane 直接复用（进程不中断，也不会重复起）；用不上的 pane **不杀**，挪进同一会话的「保留」窗口（`C-b w` 能看到），以后切回需要它的布局时会被拉回来。
+- 工作台已在运行、选的就是当前布局（比如 SSH 重连、换了台设备）：只按这块屏幕重新计算比例，pane 一个都不挪。
+- 选「保持现状，直接进入」：什么都不改。
+
+**安全约定**：
+- 保存下来的命令在恢复时**只填进命令行，不会自动执行**，按回车才运行。这样误存了 `terraform apply` 之类的一次性命令也不会被自动执行。
+- 附加 pane 一律在 `~` 打开。
+
+**比例只在执行 `cw` 时套用**：直接 `tmux attach`、或把终端窗口拖到另一块屏幕时，tmux 按自己的方式缩放（不按比例，见 `docs/pitfalls.md`），再执行一次 `cw` 回车即可恢复比例。没保存过任何布局时，`cw` 的行为和以前完全一样，不会弹列表。
+
 ## 组成
 
 | 文件 | 作用 |
 |---|---|
-| `cw` | 启动器。建/复用 tmux 工作台，自愈 pane 与 watcher，`-n/-r/-s/-k` 都在这里 |
+| `cw` | 启动器。建/复用 tmux 工作台，自愈 pane 与 watcher，`-n/-s/-i/-r/-k` 都在这里 |
+| `cw-layout` | 布局功能里和 tmux 打交道的部分：`save` 抓取保存、`apply` 套用、`menu` 启动列表 |
+| `cwlayout.py` | 布局的纯逻辑：布局串解析与按比例渲染、布局文件、设备记录、pane 分配规则 |
 | `cw-follow` | 后台 watcher。每 0.7s 抓一次左 pane，识别出当前目录后通知右 pane |
 | `cw.zsh` | 右 pane zsh 的 `SIGUSR1` 陷阱，收到信号就 `cd` 并重绘提示符 |
 | `statusline.sh` | 可选但推荐的状态栏实现，保证左 pane 上有 cw 需要的识别特征 |
@@ -132,7 +164,7 @@ ln -sfn ~/claude-agents-workbench/statusline.sh ~/.claude/statusline.sh
 
 **② 用 [ccstatusline](https://github.com/sirmalloc/ccstatusline)**，并确保 `version` 与 `current-working-dir` 两个 widget 都开着。
 
-条件不满足时，`cw -s` 的「当前目录」会一直是空，右 pane 不跟随。
+条件不满足时，`cw -i` 的「当前目录」会一直是空，右 pane 不跟随。
 
 > 改 `statusline.sh` 时请保留第 1 行的版本号和绝对路径，脚本开头的注释里写明了原因。
 
@@ -169,7 +201,9 @@ ln -sfn ~/claude-agents-workbench/statusline.sh ~/.claude/statusline.sh
 
 ## 开发笔记
 
-`docs/pitfalls.md` 记录了开发过程中实际踩到的坑（tmux 的 pane 定位与选项作用域、zsh 与 bash 的差异、statusline 用 NBSP 分隔导致的解析陷阱等）。改代码前值得扫一眼。
+`docs/pitfalls.md` 记录了开发过程中实际踩到的坑（tmux 的 pane 定位与选项作用域、zsh 与 bash 的差异、statusline 用 NBSP 分隔导致的解析陷阱、布局串不按比例等）。改代码前值得扫一眼。
+
+测试：`python3 -m unittest discover -s tests -v`（只用标准库）。集成测试在独立的 tmux server 里运行，用 `tests/fakebin/claude` 代替真实的 Agent View，不会碰你正在用的 tmux。
 
 ## 许可
 

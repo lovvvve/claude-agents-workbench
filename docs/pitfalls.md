@@ -88,3 +88,29 @@ bash / grep 的 `[[:space:]]` 和 `[^ ]*` 都不认 NBSP —— `grep -oE '/home
 **16. 退出 Agent View 是按一次 `Esc`**
 
 不是 `Ctrl+C` 两次（文档里 `Ctrl+C` 描述的是清空输入）。
+
+## 布局（cw -s / 启动列表，tmux 3.5a 实测）
+
+**17. 自定义布局串套到尺寸不同的窗口时不按比例**
+
+把 316×71 的布局串直接 `select-layout` 到 200×50 的窗口，tmux 从右边、下边裁掉多出的部分：右栏从约 1/3 被压到 49 列，右下两个 pane 只剩 2 行和 1 行。窗口 resize 也是同样的效果。所以布局按百分比保存，套用时由 `cwlayout.render_tmux_layout` 按当前窗口尺寸算出绝对值，再生成带校验和的布局串。校验和算法与 tmux 的 `layout_checksum` 一致（已用 `2fab` 核对）。
+
+**18. `select-layout` 忽略布局串里的 pane 编号**
+
+tmux 按窗口内 pane 的顺序（`list-panes` 的顺序）依次填进叶子格子，串里写的编号不起作用。套用前要先用 `swap-pane -d` 把 pane 排成叶子顺序。`swap-pane` 之后 pane 选项（`@cw_role`）跟着 pane 走。
+
+**19. `list-panes -t 会话` 只列当前窗口**
+
+不带 `-s` 时只列会话**当前窗口**的 pane。有了「保留」窗口后，用户停在那个窗口时运行 `cw`，旧代码会找不到 ①④，把「保留」里的 pane 认领成 Agent View。`cw` 和 `cw-follow` 的 `pane()` 都要带 `-s`。
+
+**20. `attach \; run-shell -b …` 执行时，窗口未必已按新客户端 resize**
+
+从 tmux 外 `attach` 后紧接着的 `run-shell`，开始执行时窗口有时还是旧尺寸，时快时慢；`switch-client \; run-shell` 实测已是新尺寸。`cw-layout apply` 先等主窗口宽度等于该客户端的宽度（客户端用 `#{client_tty}` 在 run-shell 展开时确定），再计算比例。
+
+**21. tmux 的 `split-window` 默认上下切**
+
+在窄小窗口里连续不带方向地拆分，每格很快只剩 2 行，再也拆不动（`no space for new pane`）。新开 pane 前先 `select-layout tiled` 均分，再按 pane 的宽高比选方向（宽 ≥ 2 倍高就左右切），失败换另一个方向。
+
+**22. 测试里等 apply 完成要看 `@cw_layout`，不能只看 pane 数**
+
+`apply` 的顺序是：补 pane → `tiled` → 排序 → 最终 `select-layout` → 填命令 → 设 `@cw_layout`。pane 数到位时可能还处于中间的 `tiled` 状态。`cw-layout save` 也是先写文件、后设 `@cw_layout`。

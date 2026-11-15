@@ -100,6 +100,6 @@ fi
 say ""
 say "安装完成。用法："
 say "  cw          进入工作台（已存在则复用，不会新建第二个）"
-say "  cw -s       查看状态    cw -r  重启 Agent View    cw -k  关闭"
+say "  cw -s       保存当前布局    cw -i  查看状态    cw -r  重启 Agent View    cw -k  关闭"
 say ""
 say "注意：已经开着的右 pane 不会自动加载跟随逻辑，重开一个 shell 或重启工作台（cw -k && cw）后生效。"

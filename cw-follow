@@ -35,7 +35,8 @@ for line in reversed([l for l in screen.splitlines() if l.strip()][-6:]):
             if os.path.isdir(p):
                 print(p); sys.exit(0)
 PY
-pane() { tmux list-panes -t "=$SESS" -F '#{@cw_role} #{pane_id}' 2>/dev/null | awk -v r="$1" '$1==r{print $2; exit}'; }
+# -s：按整个会话找（用户停在「保留」窗口时，不带 -s 只列当前窗口）
+pane() { tmux list-panes -s -t "=$SESS" -F '#{@cw_role} #{pane_id}' 2>/dev/null | awk -v r="$1" '$1==r{print $2; exit}'; }
 
 while tmux has-session -t "=$SESS" 2>/dev/null; do
   L=$(pane left); R=$(pane right)

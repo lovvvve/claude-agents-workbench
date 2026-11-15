@@ -3,6 +3,7 @@
 运行：python3 -m unittest tests.test_cw_layout_cli -v（在仓库根目录）
 """
 import os
+import shutil
 import subprocess
 import sys
 import unittest
@@ -244,6 +245,22 @@ class ApplyTest(CliCase):
         self.assertEqual(sorted(self.tm('list-panes', '-t', parked, '-F', '#{pane_id}').split('\n')), sorted(busy))
         for i in range(6):
             self.assertTrue(self.pids_of('^sleep 77%d$' % i))
+
+    def test_tmux_failure_reported_not_traceback(self):
+        # tmux 命令中途失败（比如 apply 期间有 pane 被关）：要给出中文提示并返回 1，不能抛 traceback 了事
+        failbin = os.path.join(self.e.root, 'failbin')
+        os.makedirs(failbin)
+        real = shutil.which('tmux')
+        with open(os.path.join(failbin, 'tmux'), 'w') as f:
+            f.write('#!/bin/sh\nif [ "$1" = select-layout ] && [ "$4" != tiled ]; then\n'
+                    '  echo "fake select-layout failure" >&2; exit 1\nfi\nexec %s "$@"\n' % real)
+        os.chmod(os.path.join(failbin, 'tmux'), 0o755)
+        self.tm('set-option', '-w', '-t', self.p0, '@cw_apply', 'reshape\t六格\t')
+        r = self.run_cli(['cw-layout', 'apply', '--session', 'cw', '--client', self.client_tty()],
+                         extra_env={'PATH': failbin + os.pathsep + self.e.env['PATH']})
+        self.assertEqual(r.returncode, 1)
+        self.assertNotIn('Traceback', r.stderr)
+        self.assertIn('cw: 布局「六格」套用失败', r.stderr)
 
     def test_caller_pane_reused_not_parked(self):
         caller = self.tm('split-window', '-d', '-t', self.p1, '-P', '-F', '#{pane_id}')

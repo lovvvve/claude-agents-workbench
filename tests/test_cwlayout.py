@@ -185,6 +185,15 @@ class StorageTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             save_layout('缺右', bad)
 
+    def test_load_malformed_layout_raises_value_error(self):
+        os.makedirs(os.path.join(self.cfg, 'layouts'))
+        for i, text in enumerate(['{"version": 1}', '{"version": 1, "root": {"split": "lr", "children": [1]}}',
+                                  '[]', 'not json']):
+            with open(os.path.join(self.cfg, 'layouts', 'bad%d.json' % i), 'w') as f:
+                f.write(text)
+            with self.assertRaises(ValueError, msg=text):
+                load_layout('bad%d' % i)
+
     def test_normalize_term(self):
         self.assertEqual(normalize_term('iTerm2 3.7.7'), 'iTerm2')
         self.assertEqual(normalize_term(''), '其他')

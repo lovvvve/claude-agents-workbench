@@ -315,33 +315,47 @@ def _reshape(sess: str, win: str, target: cwlayout.Node, client: str) -> bool:
 def cmd_apply(a) -> int:
     fd = _lock(a.session)
     try:
-        win = main_window(a.session)
-        req = tmux('show-options', '-wqv', '-t', win, '@cw_apply')
-        tmux('set-option', '-wu', '-t', win, '@cw_apply')
-        if not req:
-            return 0
-        mode, name, caller = (req.split('\t') + ['', '', ''])[:3]
-        try:
-            target = cwlayout.load_layout(name)
-        except (OSError, ValueError) as e:
-            _notify(a.client, 'cw: 布局「%s」读取失败：%s' % (name, e))
-            return 1
-        if a.client:   # 等窗口跟上这个客户端的尺寸（attach 后 resize 未必已生效）
-            _wait(lambda: tmux('display', '-p', '-t', win, '#{window_width}') ==
-                  tmux('display', '-p', '-c', a.client, '#{client_width}'), 3.0)
-        if caller:     # 执行 cw 的 pane 稍后才回到提示符
-            _wait(lambda: _idle(caller), 1.5)
-        ok = _rescale(win, target, name, a.client) if mode == 'rescale' else \
-            _reshape(a.session, win, target, a.client)
-        if ok:
-            tmux('set-option', '-w', '-t', win, '@cw_layout', name)
-        tmux('select-window', '-t', win)
-        left = next((p for p, (r, _) in _panes(win).items() if r == 'left'), '')
-        if left:
-            tmux('select-pane', '-t', left)
-        return 0 if ok or mode == 'rescale' else 1
+        return _apply_locked(a)
+    except subprocess.CalledProcessError as e:
+        # 比如 apply 期间有 pane 被关掉：别让布局停在一半还没有任何提示
+        detail = (e.stderr or '').strip() or ' '.join(e.cmd[1:2])
+        msg = 'cw: 布局「%s」套用失败：%s' % (getattr(a, '_name', ''), detail)
+        _notify(a.client, msg)
+        print(msg, file=sys.stderr)
+        return 1
     finally:
         os.close(fd)
+
+
+def _apply_locked(a) -> int:
+    win = main_window(a.session)
+    req = tmux('show-options', '-wqv', '-t', win, '@cw_apply')
+    tmux('set-option', '-wu', '-t', win, '@cw_apply')
+    if not req:
+        return 0
+    mode, name, caller = (req.split('\t') + ['', '', ''])[:3]
+    a._name = name                       # 出错提示用
+    try:
+        target = cwlayout.load_layout(name)
+    except (OSError, ValueError) as e:
+        msg = 'cw: 布局「%s」读取失败：%s' % (name, e)
+        _notify(a.client, msg)
+        print(msg, file=sys.stderr)
+        return 1
+    if a.client:   # 等窗口跟上这个客户端的尺寸（attach 后 resize 未必已生效）
+        _wait(lambda: tmux('display', '-p', '-t', win, '#{window_width}') ==
+              tmux('display', '-p', '-c', a.client, '#{client_width}'), 3.0)
+    if caller:     # 执行 cw 的 pane 稍后才回到提示符
+        _wait(lambda: _idle(caller), 1.5)
+    ok = _rescale(win, target, name, a.client) if mode == 'rescale' else \
+        _reshape(a.session, win, target, a.client)
+    if ok:
+        tmux('set-option', '-w', '-t', win, '@cw_layout', name)
+    tmux('select-window', '-t', win)
+    left = next((p for p, (r, _) in _panes(win).items() if r == 'left'), '')
+    if left:
+        tmux('select-pane', '-t', left)
+    return 0 if ok or mode == 'rescale' else 1
 
 
 # ---------------------------------------------------------------- menu

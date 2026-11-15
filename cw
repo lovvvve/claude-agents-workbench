@@ -139,7 +139,8 @@ APPLY=()
 if [ "$choice" != __keep__ ]; then
   if [ -n "$running" ] && [ "$choice" = "$cur" ]; then mode=rescale; else mode=reshape; fi
   tmux set-option -w -t "$L" @cw_apply "$mode"$'\t'"$choice"$'\t'"${TMUX_PANE:-}"
-  APPLY=(\; run-shell -b "python3 '$BIN/cw-layout' apply --session '$SESS' --client '#{client_tty}' >/dev/null 2>&1")
+  # 输出留在 $RUN/cw-layout.<会话>.log：run-shell 丢掉输出的话，套用失败就无从查起
+  APPLY=(\; run-shell -b "python3 '$BIN/cw-layout' apply --session '$SESS' --client '#{client_tty}' >>'$RUN/cw-layout.$SESS.log' 2>&1")
 fi
 
 tmux select-window -t "$L"

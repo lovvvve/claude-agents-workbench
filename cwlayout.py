@@ -301,8 +301,11 @@ def load_layout(name: str) -> Node:
     if name == BUILTIN_NAME:
         return builtin_default()
     with open(os.path.join(_layouts_dir(), name + '.json'), encoding='utf-8') as f:
-        data = json.load(f)
-    root = _from_json(data['root'])
+        text = f.read()
+    try:                       # 手改坏的文件：各种异常统一成 ValueError，调用方只需处理一种
+        root = _from_json(json.loads(text)['root'])
+    except (KeyError, TypeError, AttributeError, ValueError) as e:
+        raise ValueError('布局「%s」文件格式错误：%s' % (name, e))
     _check_roles(root)
     return root
 

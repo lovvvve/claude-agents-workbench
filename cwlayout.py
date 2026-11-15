@@ -295,6 +295,9 @@ def _check_roles(root: Node) -> None:
     roles = [l.role for l in leaves(root)]
     if roles.count('left') != 1 or roles.count('right') != 1:
         raise ValueError('布局必须恰好包含一个 left（Agent View）和一个 right（跟随 shell）')
+    for l in leaves(root):
+        if _CTRL.search(l.cmd):   # 换行会被 shell 当成回车执行，违背「只填不执行」
+            raise ValueError('命令 %r 含换行等控制字符，不能保存或套用' % l.cmd)
 
 
 def load_layout(name: str) -> Node:

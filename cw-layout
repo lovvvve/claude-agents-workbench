@@ -308,8 +308,19 @@ def _reshape(sess: str, win: str, target: cwlayout.Node, client: str) -> bool:
         _wait(lambda: _idle(p) and tmux('capture-pane', '-p', '-t', p).strip() != '', 5.0)
         if p not in fresh:
             tmux('send-keys', '-t', p, 'C-u')       # 复用的空 shell：先清掉行内残留再填
-        tmux('send-keys', '-t', p, '-l', leaf.cmd)
+        _type_text(p, leaf.cmd)
     return True
+
+
+def _type_text(pane: str, text: str) -> None:
+    """原样把文本打进命令行，不回车。
+
+    tmux 把以 ; 结尾的参数当成命令分隔符（以 \\; 结尾则还原成字面 ;），所以末尾的 ; 前要补一个 \\；
+    -- 结束选项解析，以 - 开头的命令才不会被当成 send-keys 的参数。
+    """
+    if text.endswith(';'):
+        text = text[:-1] + '\\;'
+    tmux('send-keys', '-t', pane, '-l', '--', text)
 
 
 def cmd_apply(a) -> int:

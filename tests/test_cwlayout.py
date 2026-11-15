@@ -194,6 +194,19 @@ class StorageTest(unittest.TestCase):
             with self.assertRaises(ValueError, msg=text):
                 load_layout('bad%d' % i)
 
+    def test_cmd_with_control_chars_rejected(self):
+        # 换行会被 shell 当成回车执行：手改出这样的文件必须拒绝加载，也不能保存
+        os.makedirs(os.path.join(self.cfg, 'layouts'))
+        with open(os.path.join(self.cfg, 'layouts', 'nl.json'), 'w') as f:
+            f.write('{"version": 1, "root": {"split": "lr", "children": [{"size": 50, "pane": "left"},'
+                    ' {"size": 30, "pane": "right"}, {"size": 20, "pane": "extra", "cmd": "ls\\nrm -rf x"}]}}')
+        with self.assertRaises(ValueError):
+            load_layout('nl')
+        root = builtin_default()
+        root.children.append(Node('pane', 10, role='extra', cmd='ls\nrm'))
+        with self.assertRaises(ValueError):
+            save_layout('nl2', root)
+
     def test_load_devices_tolerates_bad_bytes(self):
         with open(os.path.join(self.cfg, 'devices'), 'wb') as f:
             f.write(b'\xff\xfe garbage\ncw\t\xe5\x85\xb6\xe4\xbb\x96\t80\t24\tA\n')

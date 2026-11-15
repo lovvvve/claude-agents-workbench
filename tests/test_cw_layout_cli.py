@@ -262,6 +262,20 @@ class ApplyTest(CliCase):
         self.assertNotIn('Traceback', r.stderr)
         self.assertIn('cw: 布局「六格」套用失败', r.stderr)
 
+    def test_fill_tmux_special_texts_verbatim(self):
+        # 结尾 ; 会被 tmux 当命令分隔符、以 - 开头会被当选项：都要原样填进命令行，且不执行
+        cmds = ['find . -name x -exec echo {} \\;', 'echo done;', '--version']
+        root = cwlayout.Node('lr', children=[
+            cwlayout.Node('pane', 40, role='left'),
+            cwlayout.Node('tb', 60, children=[cwlayout.Node('pane', 40, role='right')] +
+                          [cwlayout.Node('pane', 20, role='extra', cmd=c) for c in cmds])])
+        cwlayout.save_layout('特殊', root)
+        self.apply('reshape', '特殊')
+        for i, c in enumerate(cmds):
+            p = self.pane_of_slot(2 + i)
+            self.e.wait(lambda: c in self.capture(p), msg='%r 未原样填入：%r' % (c, self.capture(p)))
+            self.assertEqual(self.tm('display', '-p', '-t', p, '#{pane_current_command}'), 'bash')
+
     def test_caller_pane_reused_not_parked(self):
         caller = self.tm('split-window', '-d', '-t', self.p1, '-P', '-F', '#{pane_id}')
         self.wait_cmd(caller, 'bash')

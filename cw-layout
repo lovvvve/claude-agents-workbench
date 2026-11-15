@@ -399,7 +399,8 @@ def cmd_menu(a) -> int:
         return 0
     term, w, h = detect_device()
     default = cwlayout.pick_default(cwlayout.load_devices(), a.session, term, w, h,
-                                    set(saved) | {cwlayout.BUILTIN_NAME})
+                                    set(saved) | {cwlayout.BUILTIN_NAME},
+                                    fallback=(a.current if a.running and a.current else cwlayout.BUILTIN_NAME))
     items = cwlayout.menu_items(saved, a.running, a.current or '')
     choice = default
     if sys.stdin.isatty():

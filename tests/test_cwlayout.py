@@ -167,6 +167,11 @@ class StorageTest(unittest.TestCase):
         self.assertEqual(pick_default(rs, 'cw', 'iTerm2', 190, 52, avail), 'B')
         self.assertEqual(pick_default(rs, 'cw', '其他', 100, 30, avail), 'C')
 
+    def test_pick_default_no_record_uses_fallback(self):
+        rs = [DeviceRecord('cw', '其他', 80, 24, 'B')]                  # 只有别的终端类型的记录
+        self.assertEqual(pick_default(rs, 'cw', 'iTerm2', 316, 72, {'A', 'B'}, fallback='A'), 'A')
+        self.assertEqual(pick_default(rs, 'cw', 'iTerm2', 316, 72, {'B'}, fallback='A'), '默认')  # 回退项不存在
+
     def test_pick_default_deleted_layout_falls_back(self):
         rs = [DeviceRecord('cw', 'iTerm2', 316, 72, 'gone')]
         self.assertEqual(pick_default(rs, 'cw', 'iTerm2', 316, 72, set()), '默认')

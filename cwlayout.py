@@ -396,10 +396,15 @@ def resolve_choice(text: str, items: list, default_value: str):
     return None
 
 
-def pick_default(records, workbench: str, term: str, width: int, height: int, available) -> str:
-    """同工作台、同终端类型里尺寸最接近的记录；布局已不存在或无记录时回退「默认」。"""
+def pick_default(records, workbench: str, term: str, width: int, height: int, available,
+                 fallback: str = BUILTIN_NAME) -> str:
+    """同工作台、同终端类型里尺寸最接近的记录；布局已不存在时回退「默认」。
+
+    没有记录时用 fallback：工作台运行中由调用方传当前布局，回车即保持现状，
+    免得刚 cw -s 存完一回车就把多格布局收成「默认」。
+    """
     cands = [r for r in records if r.workbench == workbench and r.term == term]
     if not cands:
-        return BUILTIN_NAME
+        return fallback if fallback in available else BUILTIN_NAME
     best = min(cands, key=lambda r: abs(r.width - width) + abs(r.height - height))
     return best.layout if best.layout in available else BUILTIN_NAME

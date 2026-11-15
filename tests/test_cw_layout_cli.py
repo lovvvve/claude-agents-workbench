@@ -99,6 +99,13 @@ class MenuCliTest(CliCase):
     def test_menu_no_saved_layouts_keeps(self):
         self.assertEqual(self.menu_out(), '__keep__')
 
+    def test_menu_running_without_record_defaults_to_current(self):
+        # 刚 cw -s 存完、这台设备还没选过：回车应保持当前布局，而不是收回「默认」
+        cwlayout.save_layout('六格', six_layout())
+        r = self.run_cli(['cw-layout', 'menu', '--session', 'cw', '--running', '--current', '六格'],
+                         extra_env={'COLUMNS': '120', 'LINES': '40'})
+        self.assertEqual(r.stdout.strip(), '六格', r.stderr)
+
     def test_menu_non_tty_returns_device_default(self):
         cwlayout.save_layout('监控', cwlayout.builtin_default())
         cwlayout.remember_device(cwlayout.DeviceRecord('cw', '其他', 80, 24, '监控'))

@@ -42,7 +42,8 @@ LEFT_CMD="claude agents; exec ${SHELL:-/bin/bash}"
 has()  { tmux has-session -t "=$SESS" 2>/dev/null; }               # = 前缀 = 精确匹配，避免 cw 命中 cw-foo
 # -s：按整个会话找。不带 -s 只列当前窗口，用户停在「保留」窗口时会找不到 ①④ 而误重建
 pane() { tmux list-panes -s -t "=$SESS" -F '#{@cw_role} #{pane_id}' 2>/dev/null | awk -v r="$1" '$1==r{print $2; exit}'; }
-wpid() { pgrep -f "cw-follow $SESS " 2>/dev/null | head -1; }
+# 带上 DIRFILE（含运行目录）：同名工作台在别的 XDG_RUNTIME_DIR 下的 watcher（比如测试环境 vs 真实环境）互不误伤
+wpid() { pgrep -f "cw-follow $SESS $DIRFILE" 2>/dev/null | head -1; }
 # 左 pane 跑的是 `<shell> -c "claude agents; exec <shell>"`：非交互 shell 不做 job control，
 # pane_current_command 恒为 shell 名，故用进程树判断 Agent View 是否还活着
 agents_alive() {
@@ -80,7 +81,7 @@ case $MODE in
     exit 0 ;;
   kill)
     if has; then tmux kill-session -t "=$SESS"; echo "已关闭 $SESS"; else echo "$SESS 未运行"; fi
-    pkill -f "cw-follow $SESS " 2>/dev/null && echo "已停 watcher" || true
+    pkill -f "cw-follow $SESS $DIRFILE" 2>/dev/null && echo "已停 watcher" || true
     rm -f "$DIRFILE" "$DIRFILE.wlock"
     exit 0 ;;
 esac

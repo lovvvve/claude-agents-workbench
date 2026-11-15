@@ -5,6 +5,7 @@
 import os
 import subprocess
 import sys
+import time
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -158,6 +159,22 @@ class CwE2E(unittest.TestCase):
                     msg='第三个客户端未接入')
         self.assertEqual(self.roles_count('left'), 1)
         self.assertEqual(self.roles_count('right'), 1)
+
+    def test_kill_only_own_watcher(self):
+        # 同名工作台、不同运行目录的 watcher（比如用户真实的那个）不能被 cw -k 误杀。
+        # 用唯一的工作台名，RED 阶段也碰不到用户真实的 `cw-follow cw …`
+        name = 'k%d' % os.getpid()
+        other = os.path.join(self.e.root, 'elsewhere', 'cw-dir.cw-' + name)
+        os.makedirs(os.path.dirname(other))
+        dummy = subprocess.Popen(['bash', '-c', 'exec -a "cw-follow cw-%s %s" sleep 600' % (name, other)])
+        try:
+            time.sleep(0.3)
+            subprocess.run([CW, '-n', name, '-k'], env=self.e.env, capture_output=True)
+            time.sleep(0.3)
+            self.assertIsNone(dummy.poll(), '别的运行目录下的同名 watcher 被误杀')
+        finally:
+            dummy.kill()
+            dummy.wait()
 
     def test_status_flag_i(self):
         self.start_with_layout()

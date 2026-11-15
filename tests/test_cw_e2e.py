@@ -160,6 +160,16 @@ class CwE2E(unittest.TestCase):
         self.assertEqual(self.roles_count('left'), 1)
         self.assertEqual(self.roles_count('right'), 1)
 
+    def test_no_layouts_keeps_current_window(self):
+        # 没存过布局时行为要和以前一样：你在工作台会话里自己开的窗口，cw 不该把你拉走
+        self.e.client(CW, 200, 50)
+        self.e.wait(lambda: self.session_exists() and self.roles_count('right') == 1, msg='工作台未就绪')
+        w2 = self.e.tmux('new-window', '-t', '=cw:', '-P', '-F', '#{window_id}')
+        self.e.client(CW, 200, 50, name='c2')
+        self.e.wait(lambda: len(self.e.tmux('list-clients', '-t', '=cw').split('\n')) == 2, msg='第二个客户端未接入')
+        time.sleep(0.5)
+        self.assertEqual(self.e.tmux('display', '-p', '-t', '=cw:', '#{window_id}'), w2)
+
     def test_menu_failure_still_enters_workbench(self):
         # 布局目录没有读权限：列表出错，但不能把人挡在工作台外
         layouts = os.path.join(self.e.cfg, 'layouts')

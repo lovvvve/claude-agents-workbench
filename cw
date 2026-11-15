@@ -149,7 +149,10 @@ if [ "$choice" != __keep__ ]; then
   APPLY=(\; run-shell -b "python3 '$BIN/cw-layout' apply --session '$SESS' --client '#{client_tty}' >>'$RUN/cw-layout.$SESS.log' 2>&1")
 fi
 
-tmux select-window -t "$L"
+# 只在要套用布局、或你正停在「保留」窗口时切回主窗口；没存过布局时行为与旧版一致
+if [ "$choice" != __keep__ ] || [ "$(tmux display -p -t "=$SESS:" '#{@cw_parked}' 2>/dev/null)" = 1 ]; then
+  tmux select-window -t "$L"
+fi
 tmux select-pane -t "$L"
 exec 9>&-                                                   # 进入前释放锁，让下一次 cw 不被阻塞
 if [ -n "${TMUX:-}" ]; then

@@ -1,0 +1,6 @@
+#!/bin/sh
+# 测试用假 claude：只实现 `claude agents`。循环 sleep，进程命令行里保留 "claude agents"，
+# 供 cw 的 agents_alive / pgrep 判断。绝不在测试里启动真实 Agent View。
+[ "${1:-}" = agents ] || { echo "fake claude: only 'agents'" >&2; exit 1; }
+trap 'exit 0' HUP TERM
+while :; do sleep 1; done

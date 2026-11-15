@@ -1,0 +1,162 @@
+#!/usr/bin/env python3
+"""cw-layout —— cw 布局功能里和 tmux 打交道的部分。
+
+  cw-layout save  --session SESS [--name NAME] [--yes] [--caller-pane %N]
+      把工作台主窗口（含 @cw_role=left 的窗口）的当前布局存成模板
+  cw-layout apply --session SESS --client TTY
+      （由 cw 经 run-shell -b 调用）按主窗口的 @cw_apply 请求套用布局
+  cw-layout menu  --session SESS [--running] [--current NAME]
+      启动时的布局列表；stdout 只输出选中的值（__keep__ 或布局名）
+
+纯逻辑在同目录的 cwlayout.py。
+"""
+import argparse
+import os
+import shlex
+import subprocess
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import cwlayout  # noqa: E402
+from cwlayout import leaves  # noqa: E402
+
+SHELLS = ('sh', 'bash', 'zsh', 'fish', 'ksh', 'dash')
+
+
+class CwError(Exception):
+    """给用户看的中文错误；CLI 打到 stderr 并以退出码 1 结束。"""
+
+
+# ---------------------------------------------------------------- tmux 与 /proc
+
+def tmux(*args: str) -> str:
+    return subprocess.run(['tmux', *args], capture_output=True, text=True,
+                          check=True).stdout.rstrip('\n')
+
+
+def main_window(sess: str) -> str:
+    """工作台主窗口 = 含 @cw_role=left 的窗口；按整个会话找（-s），不受当前窗口影响。"""
+    try:
+        out = tmux('list-panes', '-s', '-t', '=' + sess, '-F', '#{window_id}\t#{@cw_role}')
+    except subprocess.CalledProcessError:
+        raise CwError('工作台 %s 未运行' % sess)
+    for line in out.splitlines():
+        wid, _, role = line.partition('\t')
+        if role == 'left':
+            return wid
+    raise CwError('工作台 %s 里找不到 Agent View pane（@cw_role=left）' % sess)
+
+
+def _stat_fields(pid: int) -> list:
+    with open('/proc/%d/stat' % pid) as f:
+        s = f.read()
+    return s[s.rfind(')') + 2:].split()      # [state, ppid, pgrp, session, tty_nr, tpgid, ...]
+
+
+def pane_fg_cmd(pane_pid: int) -> str:
+    """pane 里 shell 的前台命令；shell 自己在前台（停在提示符）时返回 ''。"""
+    try:
+        f = _stat_fields(pane_pid)
+        pgrp, tpgid = int(f[2]), int(f[5])
+        if tpgid <= 0 or tpgid == pgrp:
+            return ''
+        with open('/proc/%d/cmdline' % tpgid, 'rb') as fh:
+            argv = [a.decode('utf-8', 'replace') for a in fh.read().split(b'\0') if a]
+        return shlex.join(argv)
+    except (OSError, ValueError, IndexError):
+        return ''
+
+
+def _panes(win: str) -> dict:
+    out = tmux('list-panes', '-t', win, '-F', '#{pane_id}\t#{@cw_role}\t#{pane_pid}')
+    info = {}
+    for line in out.splitlines():
+        pid_, role, ppid = line.split('\t')
+        info[pid_] = (role, int(ppid))
+    return info
+
+
+def capture(sess: str, caller_pane: str = '') -> cwlayout.Node:
+    """抓取主窗口布局：结构与比例取自 #{window_layout}，角色取自 @cw_role，命令取前台进程。"""
+    win = main_window(sess)
+    root = cwlayout.parse_tmux_layout(tmux('display', '-p', '-t', win, '#{window_layout}'))
+    info = _panes(win)
+    for leaf in leaves(root):
+        role, ppid = info.get(leaf.pane_id, ('', 0))
+        leaf.role = role if role in ('left', 'right') else 'extra'
+        if leaf.role == 'extra':
+            # 执行 cw -s 的那个 pane 前台是 cw 自己，记成空 shell
+            leaf.cmd = '' if leaf.pane_id == caller_pane else pane_fg_cmd(ppid)
+    return root
+
+
+# ---------------------------------------------------------------- save
+
+def _ask(prompt: str) -> str:
+    sys.stdout.write(prompt)
+    sys.stdout.flush()
+    line = sys.stdin.readline()
+    if not line:
+        raise EOFError
+    return line.rstrip('\n')
+
+
+def cmd_save(a) -> int:
+    root = capture(a.session, a.caller_pane or '')
+    name = a.name
+    if name is not None:
+        err = cwlayout.validate_name(name)
+        if err:
+            raise CwError('布局名「%s」不合法：%s' % (name, err))
+    while name is None:
+        cand = _ask('布局名：').strip()
+        err = cwlayout.validate_name(cand)
+        if err:
+            print(err)
+            continue
+        name = cand
+    if not a.yes:
+        extras = [l for l in leaves(root) if l.role == 'extra']
+        for i, leaf in enumerate(extras, 1):
+            print('[%d] %dx%d  命令：%s' % (i, leaf.w, leaf.h, leaf.cmd or '（空 shell）'))
+            ans = _ask('回车保留 / 输入新命令 / 输入 - 清空：')
+            if ans.strip() == '-':
+                leaf.cmd = ''
+            elif ans.strip():
+                leaf.cmd = ans.strip()
+        if name in cwlayout.list_layouts():
+            if _ask('布局 %s 已存在，覆盖？[y/N] ' % name).strip().lower() not in ('y', 'yes'):
+                print('已取消')
+                return 1
+    cwlayout.save_layout(name, root)
+    tmux('set-option', '-w', '-t', main_window(a.session), '@cw_layout', name)
+    print('已保存布局「%s」（%s）' % (name, os.path.join(cwlayout.config_dir(), 'layouts', name + '.json')))
+    return 0
+
+
+# ---------------------------------------------------------------- 入口
+
+def main(argv=None) -> int:
+    p = argparse.ArgumentParser(prog='cw-layout')
+    sub = p.add_subparsers(dest='cmd', required=True)
+    s = sub.add_parser('save')
+    s.add_argument('--session', required=True)
+    s.add_argument('--name')
+    s.add_argument('--yes', action='store_true')
+    s.add_argument('--caller-pane', default='')
+    a = p.parse_args(argv)
+    try:
+        return {'save': cmd_save}[a.cmd](a)
+    except CwError as e:
+        print('cw: %s' % e, file=sys.stderr)
+        return 1
+    except ValueError as e:
+        print('cw: %s' % e, file=sys.stderr)
+        return 1
+    except (EOFError, KeyboardInterrupt):
+        print('', file=sys.stderr)
+        return 130
+
+
+if __name__ == '__main__':
+    sys.exit(main())

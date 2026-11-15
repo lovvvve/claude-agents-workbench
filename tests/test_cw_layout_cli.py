@@ -89,6 +89,21 @@ class SaveTest(CliCase):
         self.assertEqual(r.returncode, 1)
 
 
+class MenuCliTest(CliCase):
+    def menu_out(self, extra_env=None):
+        r = self.run_cli(['cw-layout', 'menu', '--session', 'cw'], extra_env=extra_env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return r.stdout.strip()
+
+    def test_menu_no_saved_layouts_keeps(self):
+        self.assertEqual(self.menu_out(), '__keep__')
+
+    def test_menu_non_tty_returns_device_default(self):
+        cwlayout.save_layout('监控', cwlayout.builtin_default())
+        cwlayout.remember_device(cwlayout.DeviceRecord('cw', '其他', 80, 24, '监控'))
+        self.assertEqual(self.menu_out({'COLUMNS': '80', 'LINES': '24'}), '监控')
+
+
 class ApplyTest(CliCase):
     """内层会话 cw：left 跑假 claude agents，right 是 bash；harness 提供 200x50 的真实客户端。"""
 

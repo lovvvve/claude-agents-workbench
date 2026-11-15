@@ -349,6 +349,30 @@ def remember_device(rec: DeviceRecord) -> None:
         '%s\t%s\t%d\t%d\t%s\n' % (r.workbench, r.term, r.width, r.height, r.layout) for r in keep))
 
 
+# ---------------------------------------------------------------- 启动列表
+
+KEEP = '__keep__'
+KEEP_TEXT = '保持现状，直接进入'
+
+
+def menu_items(saved: list, running: bool, current: str) -> list:
+    """列表项 (值, 显示文本)：运行中时首项为「保持现状」，然后是「默认」和已保存布局。"""
+    items = [(KEEP, KEEP_TEXT)] if running else []
+    for name in [BUILTIN_NAME] + [s for s in saved if s != BUILTIN_NAME]:
+        items.append((name, name + ('  ← 当前' if name == current else '')))
+    return items
+
+
+def resolve_choice(text: str, items: list, default_value: str):
+    """空输入 = 默认项；合法序号（从 1 起）= 对应值；其他返回 None 让调用方重问。"""
+    t = text.strip()
+    if not t:
+        return default_value
+    if t.isdigit() and 1 <= int(t) <= len(items):
+        return items[int(t) - 1][0]
+    return None
+
+
 def pick_default(records, workbench: str, term: str, width: int, height: int, available) -> str:
     """同工作台、同终端类型里尺寸最接近的记录；布局已不存在或无记录时回退「默认」。"""
     cands = [r for r in records if r.workbench == workbench and r.term == term]

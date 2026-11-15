@@ -21,11 +21,13 @@ from cwlayout import (  # noqa: E402
     list_layouts,
     load_devices,
     load_layout,
+    menu_items,
     normalize_term,
     parse_tmux_layout,
     pick_default,
     remember_device,
     render_tmux_layout,
+    resolve_choice,
     same_shape,
     save_layout,
     validate_name,
@@ -96,6 +98,20 @@ class AssignTest(unittest.TestCase):
         a = assign_panes(T(''), '%0', '%1', [Candidate('%9', 'vim x', False)])
         self.assertEqual(a.slots[2], (None, False))
         self.assertEqual(a.park, ['%9'])
+
+
+class MenuTest(unittest.TestCase):
+    def test_menu_items_running_marks_current(self):
+        items = menu_items(['监控', '开发'], True, '监控')
+        self.assertEqual(items[0], ('__keep__', '保持现状，直接进入'))
+        self.assertEqual([v for v, _ in items], ['__keep__', '默认', '监控', '开发'])
+        self.assertTrue(items[2][1].endswith('← 当前'))
+
+    def test_resolve_choice(self):
+        items = menu_items(['监控'], False, '')
+        self.assertEqual(resolve_choice('', items, '监控'), '监控')
+        self.assertEqual(resolve_choice('1', items, '监控'), '默认')   # 不运行时没有「保持现状」
+        self.assertIsNone(resolve_choice('9', items, '监控'))
 
 
 class StorageTest(unittest.TestCase):

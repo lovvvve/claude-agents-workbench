@@ -336,6 +336,61 @@ def cmd_apply(a) -> int:
         os.close(fd)
 
 
+# ---------------------------------------------------------------- menu
+
+def detect_device():
+    """(终端类型, 宽, 高)。tmux 内看当前客户端（shell 里的 LC_TERMINAL 可能来自别的设备）。"""
+    if os.environ.get('TMUX'):
+        try:
+            raw = tmux('display', '-p', '#{client_termtype}')
+            w, h = tmux('display', '-p', '#{client_width} #{client_height}').split()
+            return cwlayout.normalize_term(raw), int(w), int(h)
+        except (subprocess.CalledProcessError, ValueError):
+            pass
+    raw = os.environ.get('LC_TERMINAL', '')
+    try:   # cw 用 $(…) 捕获 stdout，所以从 stderr 取尺寸，不能用 shutil.get_terminal_size()
+        sz = os.get_terminal_size(sys.stderr.fileno())
+        w, h = sz.columns, sz.lines
+    except OSError:
+        try:
+            w, h = int(os.environ['COLUMNS']), int(os.environ['LINES'])
+        except (KeyError, ValueError):
+            w, h = 80, 24
+    return cwlayout.normalize_term(raw), w, h
+
+
+def cmd_menu(a) -> int:
+    saved = cwlayout.list_layouts()
+    if not saved:                      # 没存过布局：不弹列表，cw 照旧
+        print(cwlayout.KEEP)
+        return 0
+    term, w, h = detect_device()
+    default = cwlayout.pick_default(cwlayout.load_devices(), a.session, term, w, h,
+                                    set(saved) | {cwlayout.BUILTIN_NAME})
+    items = cwlayout.menu_items(saved, a.running, a.current or '')
+    choice = default
+    if sys.stdin.isatty():
+        err = sys.stderr
+        idx = next(i for i, (v, _) in enumerate(items, 1) if v == default)
+        err.write('cw 布局（%s · %s %dx%d）：\n' % (a.session, term, w, h))
+        for i, (v, text) in enumerate(items, 1):
+            err.write('%s %d) %s\n' % ('*' if v == default else ' ', i, text))
+        while True:
+            err.write('选择 [%d]：' % idx)
+            err.flush()
+            line = sys.stdin.readline()
+            if not line:
+                raise EOFError
+            choice = cwlayout.resolve_choice(line, items, default)
+            if choice is not None:
+                break
+            err.write('无效的选择，请输入 1-%d 或直接回车\n' % len(items))
+    if choice != cwlayout.KEEP:
+        cwlayout.remember_device(cwlayout.DeviceRecord(a.session, term, w, h, choice))
+    print(choice)
+    return 0
+
+
 # ---------------------------------------------------------------- 入口
 
 def main(argv=None) -> int:
@@ -349,9 +404,13 @@ def main(argv=None) -> int:
     s = sub.add_parser('apply')
     s.add_argument('--session', required=True)
     s.add_argument('--client', default='')
+    s = sub.add_parser('menu')
+    s.add_argument('--session', required=True)
+    s.add_argument('--running', action='store_true')
+    s.add_argument('--current', default='')
     a = p.parse_args(argv)
     try:
-        return {'save': cmd_save, 'apply': cmd_apply}[a.cmd](a)
+        return {'save': cmd_save, 'apply': cmd_apply, 'menu': cmd_menu}[a.cmd](a)
     except CwError as e:
         print('cw: %s' % e, file=sys.stderr)
         return 1

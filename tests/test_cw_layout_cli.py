@@ -215,6 +215,16 @@ class ApplyTest(CliCase):
         self.assertEqual(self.pane_of_slot(1), slot1)
         self.assertEqual(self.tm('display', '-p', '-t', slot1, '#{pane_current_command}'), 'sleep')
 
+    def test_running_shell_script_not_treated_as_idle(self):
+        # bash 脚本在前台时 pane_current_command 也是 bash，但它不是「停在提示符的空 shell」
+        script = self.tm('split-window', '-d', '-t', self.p1, '-P', '-F', '#{pane_id}')
+        self.wait_cmd(script, 'bash')
+        self.tm('send-keys', '-t', script, "bash -c 'sleep 600; :'", 'Enter')
+        self.e.wait(lambda: self.pids_of("^bash -c sleep 600; :$"), msg='脚本未启动')
+        self.apply('reshape', '六格')
+        self.assertNotIn(script, self.main_window_panes())                  # 挪进了「保留」，没被拿来复用
+        self.assertNotIn('sleep 4242', self.capture(script))                # 没往运行中的脚本里打字
+
     def test_caller_pane_reused_not_parked(self):
         caller = self.tm('split-window', '-d', '-t', self.p1, '-P', '-F', '#{pane_id}')
         self.wait_cmd(caller, 'bash')

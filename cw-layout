@@ -178,7 +178,12 @@ def _wait(pred, timeout: float) -> bool:
 
 
 def _idle(pane: str) -> bool:
-    return tmux('display', '-p', '-t', pane, '#{pane_current_command}') in SHELLS
+    """停在 shell 提示符：前台是 shell，且就是 shell 自己（不是 bash deploy.sh 这类脚本）。
+
+    只看 pane_current_command 不够：bash 脚本、cw 自己在前台时它也是 bash。
+    """
+    cmd, ppid = tmux('display', '-p', '-t', pane, '#{pane_current_command}\t#{pane_pid}').split('\t')
+    return cmd in SHELLS and pane_fg_cmd(int(ppid)) == ''
 
 
 def _window_size(win: str):
